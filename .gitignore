@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# RustEase compiler output
+output/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test/coverage
+coverage/
+
+# Orchestration artifacts (development-only, not shipped)
+orchestration/
+
+# Augment AI artifacts
+.augment/
+
+# Temporary/scratch files
+*.tmp
+_tmp_*
+_test_*
+tmp-*
+test-map.js
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
