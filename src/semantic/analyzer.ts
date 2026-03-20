@@ -272,6 +272,8 @@ function collectTypes(
         assignmentCount.set(key, count);
         if (count > 1) result.mutableVariables.add(key);
         const exprType = inferExprType(fn, stmt.expression, scope, result, userFunctions, false);
+        // Propagate call-site argument types for function calls in the RHS
+        collectCallSites(fn, stmt.expression, scope, result, callSiteArgs, userFunctions);
         if (!scope.isDefined(stmt.identifier)) {
           scope.define(stmt.identifier, exprType);
         }
@@ -338,7 +340,9 @@ function collectTypes(
         }
         break;
       case 'ReturnStatement':
-        collectCallSites(fn, stmt.expression, scope, result, callSiteArgs, userFunctions);
+        if (stmt.expression !== null) {
+          collectCallSites(fn, stmt.expression, scope, result, callSiteArgs, userFunctions);
+        }
         break;
     }
   }
@@ -416,7 +420,9 @@ function validateBody(
         break;
       }
       case 'ReturnStatement':
-        inferExprType(fn, stmt.expression, scope, result, userFunctions, true);
+        if (stmt.expression !== null) {
+          inferExprType(fn, stmt.expression, scope, result, userFunctions, true);
+        }
         break;
       case 'IfStatement': {
         const condType = inferExprType(fn, stmt.condition, scope, result, userFunctions, true);
@@ -767,7 +773,7 @@ function inferExprType(
             const argType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
             if (reportErrors && isArrayType && !isUnknown(argType)) {
               const arrType = objectType as { kind: 'array'; elementType: YlType };
-              if (!typesEqual(argType, arrType.elementType)) {
+              if (!isUnknown(arrType.elementType) && !typesEqual(argType, arrType.elementType)) {
                 result.errors.push(createError('semantic',
                   `Cannot push '${typeToString(argType)}' to array of '${typeToString(arrType.elementType)}'`,
                   expr.location));
@@ -1424,6 +1430,7 @@ function inferReturnType(
   // Check for explicit return statements
   for (const stmt of stmts) {
     if (stmt.kind === 'ReturnStatement') {
+      if (stmt.expression === null) return VOID;
       return inferExprType(fn, stmt.expression, scope, result, userFunctions, false);
     }
     if (stmt.kind === 'IfStatement') {
@@ -1445,6 +1452,12 @@ function inferReturnType(
     if (stmt.kind === 'ForStatement') {
       const bodyRet = inferReturnType(fn, stmt.body, scope, result, userFunctions);
       if (!isPrimitive(bodyRet, 'void')) return bodyRet;
+    }
+    if (stmt.kind === 'MatchStatement') {
+      for (const arm of stmt.arms) {
+        const t = inferReturnType(fn, arm.body, scope, result, userFunctions);
+        if (!isPrimitive(t, 'void')) return t;
+      }
     }
   }
   // Check last expression (implicit return)

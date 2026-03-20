@@ -6,6 +6,7 @@ const KEYWORDS: Record<string, TokenType> = {
   end: TokenType.End,
   if: TokenType.If,
   else: TokenType.Else,
+  elif: TokenType.Elif,
   while: TokenType.While,
   return: TokenType.Return,
   and: TokenType.And,
@@ -86,8 +87,28 @@ export function tokenize(
     }
 
     // Single-char operators and symbols
-    if (ch === '*') { addToken(TokenType.Star, '*', loc()); advance(); continue; }
-    if (ch === '/') { addToken(TokenType.Slash, '/', loc()); advance(); continue; }
+    if (ch === '*') {
+      const tokenLoc = loc();
+      advance();
+      if (peek() === '=') {
+        advance();
+        addToken(TokenType.StarEquals, '*=', tokenLoc);
+      } else {
+        addToken(TokenType.Star, '*', tokenLoc);
+      }
+      continue;
+    }
+    if (ch === '/') {
+      const tokenLoc = loc();
+      advance();
+      if (peek() === '=') {
+        advance();
+        addToken(TokenType.SlashEquals, '/=', tokenLoc);
+      } else {
+        addToken(TokenType.Slash, '/', tokenLoc);
+      }
+      continue;
+    }
     if (ch === '%') { addToken(TokenType.Percent, '%', loc()); advance(); continue; }
     if (ch === '(') { addToken(TokenType.LeftParen, '(', loc()); advance(); continue; }
     if (ch === ')') { addToken(TokenType.RightParen, ')', loc()); advance(); continue; }

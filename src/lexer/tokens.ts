@@ -15,6 +15,7 @@ export enum TokenType {
   End = 'End',
   If = 'If',
   Else = 'Else',
+  Elif = 'Elif',
   While = 'While',
   Return = 'Return',
   And = 'And',
@@ -52,6 +53,8 @@ export enum TokenType {
   ThinArrow = 'ThinArrow',
   PlusEquals = 'PlusEquals',
   MinusEquals = 'MinusEquals',
+  StarEquals = 'StarEquals',
+  SlashEquals = 'SlashEquals',
 
   // Symbols
   LeftParen = 'LeftParen',
@@ -65,7 +68,6 @@ export enum TokenType {
   Dot = 'Dot',
   DotDot = 'DotDot',
   DotDotEquals = 'DotDotEquals',
-  Hash = 'Hash',
   Pipe = 'Pipe',
   Semicolon = 'Semicolon',
 

@@ -256,7 +256,9 @@ function collectUseStmtsFromStmt(stmt: Statement, emitter: RustEmitter): void {
       collectUseStmtsFromExpr(stmt.expression, emitter);
       break;
     case 'ReturnStatement':
-      collectUseStmtsFromExpr(stmt.expression, emitter);
+      if (stmt.expression !== null) {
+        collectUseStmtsFromExpr(stmt.expression, emitter);
+      }
       break;
     case 'ExpressionStatement':
       collectUseStmtsFromExpr(stmt.expression, emitter);
@@ -532,8 +534,12 @@ function generateStatement(
       break;
     }
     case 'ReturnStatement': {
-      const expr = generateExpression(stmt.expression, analysis, fnName);
-      emitter.emit(`return ${expr};`);
+      if (stmt.expression === null) {
+        emitter.emit(`return;`);
+      } else {
+        const expr = generateExpression(stmt.expression, analysis, fnName);
+        emitter.emit(`return ${expr};`);
+      }
       break;
     }
     case 'IfStatement': {
@@ -664,6 +670,80 @@ function generateExprStatement(expr: Expression, analysis: AnalysisResult, fnNam
     return generateExpression(expr, analysis, fnName) + ';';
   }
   return generateExpression(expr, analysis, fnName) + ';';
+}
+
+/**
+ * Generates a single statement inside a multi-statement closure body as an inline string.
+ * The last statement, if it is an ExpressionStatement, is emitted without a semicolon
+ * so that Rust treats it as the implicit return value of the closure.
+ */
+function generateClosureBodyStatement(
+  stmt: Statement,
+  analysis: AnalysisResult,
+  fnName: string,
+  declaredVars: Set<string>,
+  isLast: boolean,
+): string {
+  switch (stmt.kind) {
+    case 'VariableAssignment': {
+      const isFirst = !declaredVars.has(stmt.identifier);
+      declaredVars.add(stmt.identifier);
+      const expr = generateExpression(stmt.expression, analysis, fnName);
+      return isFirst ? `let ${stmt.identifier} = ${expr};` : `${stmt.identifier} = ${expr};`;
+    }
+    case 'ExpressionStatement': {
+      const expr = generateExpression(stmt.expression, analysis, fnName);
+      return isLast ? expr : `${expr};`;
+    }
+    case 'ReturnStatement': {
+      if (stmt.expression === null) return 'return;';
+      return `return ${generateExpression(stmt.expression, analysis, fnName)};`;
+    }
+    case 'BreakStatement':
+      return 'break;';
+    case 'ContinueStatement':
+      return 'continue;';
+    case 'IfStatement': {
+      const cond = generateExpression(stmt.condition, analysis, fnName);
+      let result = `if ${cond} { `;
+      result += stmt.thenBranch.map((s, i) =>
+        generateClosureBodyStatement(s, analysis, fnName, declaredVars, isLast && i === stmt.thenBranch.length - 1 && !stmt.elseIfBranches.length && !stmt.elseBranch)
+      ).join(' ');
+      for (const branch of stmt.elseIfBranches) {
+        const branchCond = generateExpression(branch.condition, analysis, fnName);
+        result += ` } else if ${branchCond} { `;
+        result += branch.body.map((s, i) =>
+          generateClosureBodyStatement(s, analysis, fnName, declaredVars, isLast && i === branch.body.length - 1 && !stmt.elseBranch)
+        ).join(' ');
+      }
+      if (stmt.elseBranch && stmt.elseBranch.length > 0) {
+        result += ` } else { `;
+        result += stmt.elseBranch.map((s, i) =>
+          generateClosureBodyStatement(s, analysis, fnName, declaredVars, isLast && i === stmt.elseBranch!.length - 1)
+        ).join(' ');
+      }
+      result += ' }';
+      return result;
+    }
+    case 'WhileStatement': {
+      const cond = generateExpression(stmt.condition, analysis, fnName);
+      const body = stmt.body.map((s) =>
+        generateClosureBodyStatement(s, analysis, fnName, declaredVars, false)
+      ).join(' ');
+      return `while ${cond} { ${body} }`;
+    }
+    case 'ForStatement': {
+      const iterableCode = generateForIterable(stmt.iterable, analysis, fnName);
+      const loopDeclaredVars = new Set<string>(declaredVars);
+      loopDeclaredVars.add(stmt.variable);
+      const body = stmt.body.map((s) =>
+        generateClosureBodyStatement(s, analysis, fnName, loopDeclaredVars, false)
+      ).join(' ');
+      return `for ${stmt.variable} in ${iterableCode} { ${body} }`;
+    }
+    default:
+      return `/* unsupported closure statement: ${stmt.kind} */`;
+  }
 }
 
 /**
@@ -910,8 +990,13 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
         const body = generateExpression(expr.body, analysis, fnName);
         return `|${params}| ${body}`;
       }
-      // Multi-statement body not supported in MVP
-      return `|${params}| { /* unsupported multi-statement closure */ }`;
+      // Multi-statement body: emit |params| { stmt1; stmt2; last_expr }
+      const stmts = expr.body as Statement[];
+      const closureDeclaredVars = new Set<string>();
+      const parts = stmts.map((stmt, i) =>
+        generateClosureBodyStatement(stmt, analysis, fnName, closureDeclaredVars, i === stmts.length - 1)
+      );
+      return `|${params}| { ${parts.join(' ')} }`;
     }
 
     case 'SelfExpression':

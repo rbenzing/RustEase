@@ -60,13 +60,13 @@ npx rustease run hello.re
 
 ```bash
 # See the generated Rust code
-rustease emit-rust examples/fibonacci.re
+rustease emit-rust examples/calculator.re
 
 # Build an executable
-rustease build examples/hello.re -o ./my-project
+rustease build examples/temperature-converter.re -o ./my-project
 
 # Compile and run immediately
-rustease run examples/fizzbuzz.re
+rustease run examples/guess-the-number.re
 ```
 
 ## Language Overview
@@ -196,19 +196,31 @@ npm run build
 npm test
 
 # Run in development mode
-npm run dev -- run examples/hello.re
+npm run dev -- run examples/temperature-converter.re
 ```
 
 ## Examples
 
-See the [`examples/`](examples/) directory for sample programs:
+See the [`examples/`](examples/) directory for sample programs across three difficulty tiers:
 
-- [`hello.re`](examples/hello.re) — Hello World
-- [`fibonacci.re`](examples/fibonacci.re) — Recursive function with loops
-- [`fizzbuzz.re`](examples/fizzbuzz.re) — Control flow demonstration
-- [`arithmetic.re`](examples/arithmetic.re) — Arithmetic operations
-- [`string-demo.re`](examples/string-demo.re) — String operations
-- [`multi-function.re`](examples/multi-function.re) — Multiple functions
+### 🟢 Easy
+
+- [`guess-the-number.re`](examples/guess-the-number.re) — Interactive guessing game with loops, user input, and `+=`
+- [`temperature-converter.re`](examples/temperature-converter.re) — Functions, float math, and string interpolation
+- [`todo-list.re`](examples/todo-list.re) — Arrays, push, for loops, and interactive commands
+
+### 🟡 Medium
+
+- [`calculator.re`](examples/calculator.re) — Enums, match expressions, and return values
+- [`contact-book.re`](examples/contact-book.re) — Structs, impl blocks, and arrays of structs
+- [`word-frequency.re`](examples/word-frequency.re) — Maps, string splitting, and data counting
+- [`inventory-system.re`](examples/inventory-system.re) — Structs + enums + match + impl combined
+
+### 🔴 Hard
+
+- [`csv-processor.re`](examples/csv-processor.re) — File I/O pipeline, CSV parsing, and data aggregation
+- [`task-manager-cli.re`](examples/task-manager-cli.re) — CLI args, file persistence, and CRUD operations
+- [`markdown-parser.re`](examples/markdown-parser.re) — String processing, function dispatch, and HTML generation
 
 ## Contributing
 

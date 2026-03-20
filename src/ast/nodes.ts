@@ -108,7 +108,7 @@ export interface IndexAssignment extends BaseNode {
 
 export interface ReturnStatement extends BaseNode {
   kind: 'ReturnStatement';
-  expression: Expression;
+  expression: Expression | null;
 }
 
 export interface ElseIfBranch {

@@ -58,6 +58,8 @@ describe('TokenType enum', () => {
     it('has Arrow', () => expect(TokenType.Arrow).toBe('Arrow'));
     it('has PlusEquals', () => expect(TokenType.PlusEquals).toBe('PlusEquals'));
     it('has MinusEquals', () => expect(TokenType.MinusEquals).toBe('MinusEquals'));
+    it('has StarEquals', () => expect(TokenType.StarEquals).toBe('StarEquals'));
+    it('has SlashEquals', () => expect(TokenType.SlashEquals).toBe('SlashEquals'));
   });
 
   describe('Symbol token types', () => {
@@ -73,7 +75,6 @@ describe('TokenType enum', () => {
     it('has Dot', () => expect(TokenType.Dot).toBe('Dot'));
     it('has DotDot', () => expect(TokenType.DotDot).toBe('DotDot'));
     it('has DotDotEquals', () => expect(TokenType.DotDotEquals).toBe('DotDotEquals'));
-    it('has Hash', () => expect(TokenType.Hash).toBe('Hash'));
     it('has Pipe', () => expect(TokenType.Pipe).toBe('Pipe'));
     it('has Semicolon', () => expect(TokenType.Semicolon).toBe('Semicolon'));
   });
@@ -83,9 +84,9 @@ describe('TokenType enum', () => {
     it('has EOF', () => expect(TokenType.EOF).toBe('EOF'));
   });
 
-  it('enum contains all 60 token types', () => {
+  it('enum contains all 62 token types', () => {
     const members = Object.keys(TokenType);
-    expect(members).toHaveLength(60);
+    expect(members).toHaveLength(62);
   });
 
   it('enum values are unique strings', () => {
@@ -368,6 +369,8 @@ describe('tokenize()', () => {
       ['=>', TokenType.Arrow],
       ['+=', TokenType.PlusEquals],
       ['-=', TokenType.MinusEquals],
+      ['*=', TokenType.StarEquals],
+      ['/=', TokenType.SlashEquals],
       [';', TokenType.Semicolon],
     ])('tokenizes "%s"', (src, expected) => {
       expect(tokenTypes(src)).toEqual([expected]);
@@ -422,6 +425,16 @@ describe('tokenize()', () => {
     it('-= does not interfere with standalone -', () => {
       expect(tokenTypes('-')).toEqual([TokenType.Minus]);
       expect(tokenTypes('-=')).toEqual([TokenType.MinusEquals]);
+    });
+
+    it('*= does not interfere with standalone *', () => {
+      expect(tokenTypes('*')).toEqual([TokenType.Star]);
+      expect(tokenTypes('*=')).toEqual([TokenType.StarEquals]);
+    });
+
+    it('/= does not interfere with standalone /', () => {
+      expect(tokenTypes('/')).toEqual([TokenType.Slash]);
+      expect(tokenTypes('/=')).toEqual([TokenType.SlashEquals]);
     });
 
     it('.. does not interfere with standalone .', () => {

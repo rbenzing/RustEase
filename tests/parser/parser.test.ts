@@ -101,6 +101,24 @@ describe('parse() — return statement', () => {
     expect(expr.kind).toBe('Identifier');
     expect(expr.name).toBe('x');
   });
+
+  it('parses bare return (no expression)', () => {
+    const stmt = firstStmt('function f()\nreturn\nend') as ReturnStatement;
+    expect(stmt.kind).toBe('ReturnStatement');
+    expect(stmt.expression).toBeNull();
+  });
+
+  it('parses bare return inside if branch', () => {
+    const src = 'function check(x)\nif x < 0\nreturn\nend\nend';
+    const { errors } = parseSource(src);
+    expect(errors).toHaveLength(0);
+    const fn = firstFn(src);
+    const ifStmt = fn.body[0] as IfStatement;
+    expect(ifStmt.kind).toBe('IfStatement');
+    const ret = ifStmt.thenBranch[0] as ReturnStatement;
+    expect(ret.kind).toBe('ReturnStatement');
+    expect(ret.expression).toBeNull();
+  });
 });
 
 describe('parse() — expression statement', () => {
@@ -324,6 +342,44 @@ describe('parse() — binary operators', () => {
     const bin = ret.expression as BinaryExpression;
     expect(bin.kind).toBe('BinaryExpression');
     expect(bin.operator).toBe(op);
+  });
+});
+
+// S01: Compound assignment operators
+describe('parse() — compound assignment operators (S01)', () => {
+  it('x += 1 parses as VariableAssignment with desugared BinaryExpression', () => {
+    const stmt = firstStmt('function f()\nx += 1\nend') as VariableAssignment;
+    expect(stmt.kind).toBe('VariableAssignment');
+    expect(stmt.identifier).toBe('x');
+    const bin = stmt.expression as BinaryExpression;
+    expect(bin.kind).toBe('BinaryExpression');
+    expect(bin.operator).toBe('+');
+    const left = bin.left as IdentifierExpr;
+    expect(left.kind).toBe('Identifier');
+    expect(left.name).toBe('x');
+    const right = bin.right as Literal;
+    expect(right.kind).toBe('Literal');
+    expect(right.value).toBe(1);
+  });
+
+  it('x -= 5 parses as VariableAssignment with desugared BinaryExpression', () => {
+    const stmt = firstStmt('function f()\nx -= 5\nend') as VariableAssignment;
+    expect(stmt.kind).toBe('VariableAssignment');
+    expect(stmt.identifier).toBe('x');
+    const bin = stmt.expression as BinaryExpression;
+    expect(bin.kind).toBe('BinaryExpression');
+    expect(bin.operator).toBe('-');
+    const left = bin.left as IdentifierExpr;
+    expect(left.kind).toBe('Identifier');
+    expect(left.name).toBe('x');
+    const right = bin.right as Literal;
+    expect(right.kind).toBe('Literal');
+    expect(right.value).toBe(5);
+  });
+
+  it('compound assignment produces no parse errors', () => {
+    const { errors } = parseSource('function f()\nx += 1\nx -= 5\nend');
+    expect(errors).toHaveLength(0);
   });
 });
 

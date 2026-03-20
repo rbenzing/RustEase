@@ -139,6 +139,10 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
         declarations.push(parseEnumDeclaration());
       } else if (check(TokenType.Impl)) {
         declarations.push(parseImplDeclaration());
+      } else if (check(TokenType.Import) || check(TokenType.From)) {
+        const token = peek();
+        errors.push(createError('parser', `'import' is not yet supported in RustEase`, token.location));
+        synchronize();
       } else {
         const token = peek();
         errors.push(createError('parser', `Unexpected token '${token.value}' at top level`, token.location));
@@ -267,7 +271,7 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     skipNewlines();
 
     while (!isAtEnd()) {
-      if (check(TokenType.End) || check(TokenType.Else) || check(TokenType.Function)) {
+      if (check(TokenType.End) || check(TokenType.Else) || check(TokenType.Elif) || check(TokenType.Function)) {
         break;
       }
       const stmt = parseStatement();
@@ -299,6 +303,22 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       return { kind: 'VariableAssignment', identifier: identTok.value, expression, isConst: true, location };
     }
 
+    // Compound assignment: x += expr → x = x + expr, x -= expr → x = x - expr, x *= expr → x = x * expr, x /= expr → x = x / expr
+    if (check(TokenType.Identifier) &&
+        (peekNext().type === TokenType.PlusEquals || peekNext().type === TokenType.MinusEquals ||
+         peekNext().type === TokenType.StarEquals || peekNext().type === TokenType.SlashEquals)) {
+      const location = currentLocation();
+      const identTok = advance(); // consume identifier
+      const opToken = advance();  // consume +=, -=, *=, or /=
+      const op: BinaryOperator = opToken.type === TokenType.PlusEquals ? '+' :
+                                 opToken.type === TokenType.MinusEquals ? '-' :
+                                 opToken.type === TokenType.StarEquals ? '*' : '/';
+      const rhs = parseExpression();
+      const identExpr = { kind: 'Identifier' as const, name: identTok.value, location };
+      const binaryExpr = { kind: 'BinaryExpression' as const, left: identExpr, operator: op, right: rhs, location } satisfies BinaryExpression;
+      return { kind: 'VariableAssignment', identifier: identTok.value, expression: binaryExpr, location };
+    }
+
     // Simple assignment: identifier = expr
     if (check(TokenType.Identifier) && peekNext().type === TokenType.Equals) {
       return parseAssignment();
@@ -307,16 +327,40 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     // Parse expression — then check for assignment forms
     const location = currentLocation();
     const expr = parseExpression();
-    if (expr.kind === 'IndexExpression' && check(TokenType.Equals)) {
-      advance(); // consume '='
-      const value = parseExpression();
+    if (expr.kind === 'IndexExpression' &&
+        (check(TokenType.Equals) || check(TokenType.PlusEquals) || check(TokenType.MinusEquals) ||
+         check(TokenType.StarEquals) || check(TokenType.SlashEquals))) {
+      const opToken = advance(); // consume '=', '+=', '-=', '*=', or '/='
+      const rhs = parseExpression();
+      let value: Expression;
+      if (opToken.type === TokenType.Equals) {
+        value = rhs;
+      } else {
+        const op: BinaryOperator = opToken.type === TokenType.PlusEquals ? '+' :
+                                   opToken.type === TokenType.MinusEquals ? '-' :
+                                   opToken.type === TokenType.StarEquals ? '*' : '/';
+        const lhsExpr: Expression = { kind: 'IndexExpression' as const, object: expr.object, index: expr.index, location };
+        value = { kind: 'BinaryExpression' as const, left: lhsExpr, operator: op, right: rhs, location } satisfies BinaryExpression;
+      }
       return { kind: 'IndexAssignment', object: expr.object, index: expr.index, value, location } satisfies IndexAssignment;
     }
-    if (expr.kind === 'FieldAccess' && check(TokenType.Equals) &&
-        (expr.object.kind === 'Identifier' || expr.object.kind === 'SelfExpression')) {
-      advance(); // consume '='
-      const value = parseExpression();
+    if (expr.kind === 'FieldAccess' &&
+        (expr.object.kind === 'Identifier' || expr.object.kind === 'SelfExpression') &&
+        (check(TokenType.Equals) || check(TokenType.PlusEquals) || check(TokenType.MinusEquals) ||
+         check(TokenType.StarEquals) || check(TokenType.SlashEquals))) {
+      const opToken = advance(); // consume '=', '+=', '-=', '*=', or '/='
+      const rhs = parseExpression();
       const objectName = expr.object.kind === 'SelfExpression' ? 'self' : expr.object.name;
+      let value: Expression;
+      if (opToken.type === TokenType.Equals) {
+        value = rhs;
+      } else {
+        const op: BinaryOperator = opToken.type === TokenType.PlusEquals ? '+' :
+                                   opToken.type === TokenType.MinusEquals ? '-' :
+                                   opToken.type === TokenType.StarEquals ? '*' : '/';
+        const lhsExpr: Expression = { kind: 'FieldAccess' as const, object: expr.object, field: expr.field, location };
+        value = { kind: 'BinaryExpression' as const, left: lhsExpr, operator: op, right: rhs, location } satisfies BinaryExpression;
+      }
       return { kind: 'FieldAssignment', object: objectName, field: expr.field, value, location } satisfies FieldAssignment;
     }
 
@@ -334,20 +378,29 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     const elseIfBranches: ElseIfBranch[] = [];
     let elseBranch: Statement[] | null = null;
 
-    while (check(TokenType.Else)) {
+    while (check(TokenType.Else) || check(TokenType.Elif)) {
       const elseLoc = currentLocation();
-      advance(); // consume 'else'
-      skipNewlines();
 
-      if (check(TokenType.If)) {
-        advance(); // consume 'if'
+      if (check(TokenType.Elif)) {
+        advance(); // consume 'elif'
         const elseIfCondition = parseExpression();
         skipNewlines();
         const elseIfBody = parseBody();
         elseIfBranches.push({ condition: elseIfCondition, body: elseIfBody, location: elseLoc });
       } else {
-        elseBranch = parseBody();
-        break;
+        advance(); // consume 'else'
+        skipNewlines();
+
+        if (check(TokenType.If)) {
+          advance(); // consume 'if'
+          const elseIfCondition = parseExpression();
+          skipNewlines();
+          const elseIfBody = parseBody();
+          elseIfBranches.push({ condition: elseIfCondition, body: elseIfBody, location: elseLoc });
+        } else {
+          elseBranch = parseBody();
+          break;
+        }
       }
     }
 
@@ -385,6 +438,10 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
   function parseReturnStatement(): ReturnStatement {
     const location = currentLocation();
     advance(); // consume 'return'
+    // Bare return: no expression when followed by a statement terminator
+    if (check(TokenType.Newline) || check(TokenType.End) || check(TokenType.Else) || check(TokenType.EOF) || check(TokenType.RightBrace)) {
+      return { kind: 'ReturnStatement', expression: null, location };
+    }
     const expression = parseExpression();
     return { kind: 'ReturnStatement', expression, location };
   }
@@ -714,7 +771,23 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       expect(TokenType.Pipe, "Expected '|' to close closure parameters");
     }
 
-    // Body is always a single expression for MVP
+    // Multi-statement body: { stmt; stmt; ... }
+    if (check(TokenType.LeftBrace)) {
+      advance(); // consume '{'
+      const statements: Statement[] = [];
+      // Skip leading newlines/semicolons
+      while (check(TokenType.Newline) || check(TokenType.Semicolon)) advance();
+      while (!check(TokenType.RightBrace) && !isAtEnd()) {
+        const stmt = parseStatement();
+        statements.push(stmt);
+        // Skip separators between statements
+        while (check(TokenType.Newline) || check(TokenType.Semicolon)) advance();
+      }
+      expect(TokenType.RightBrace, "Expected '}' to close closure body");
+      return { kind: 'ClosureExpression', parameters, body: statements, location } satisfies ClosureExpression;
+    }
+
+    // Single-expression body
     const body = parseExpression();
     return { kind: 'ClosureExpression', parameters, body, location } satisfies ClosureExpression;
   }
