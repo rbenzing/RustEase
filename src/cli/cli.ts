@@ -4,13 +4,10 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import { compile } from '../index.js';
 import { getFunctions } from '../ast/nodes.js';
 import type { CompilerError } from '../errors/errors.js';
-
-const require = createRequire(import.meta.url);
-const pkg = require('../../package.json') as { version: string };
+import { VERSION } from './version.js';
 
 // Exported for testing
 export function formatErrors(errors: CompilerError[]): string {
@@ -86,7 +83,7 @@ const program = new Command();
 program
   .name('rustease')
   .description('RustEase compiler — compile .re files to Rust')
-  .version(pkg.version);
+  .version(VERSION);
 
 program
   .command('build <file>')
@@ -168,10 +165,16 @@ program
     process.stdout.write(result.rust);
   });
 
-// Only parse argv when running as the main entry point (not when imported for testing)
-const isMain =
-  process.argv[1] !== undefined &&
-  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+// Only parse argv when running as the main entry point (not when imported for testing).
+// In CJS/SEA mode, import.meta.url is undefined — treat that as main entry (correct for standalone exe).
+const isMain = (() => {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  } catch {
+    return true;
+  }
+})();
 
 if (isMain) {
   program.parse(process.argv);

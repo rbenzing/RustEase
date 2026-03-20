@@ -3,6 +3,9 @@ node_modules/
 
 # Build output
 dist/
+release/
+*.blob
+sea-config.json
 
 # RustEase compiler output
 output/
