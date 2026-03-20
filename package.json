@@ -9,7 +9,7 @@
     "dist/"
   ],
   "bin": {
-    "rustease": "./dist/cli/cli.js"
+    "rustease": "dist/cli/cli.js"
   },
   "scripts": {
     "build": "tsc",
