@@ -9,6 +9,7 @@ import type {
   EnumDeclaration,
   ImplDeclaration,
   ConstDeclaration,
+  ImportDeclaration,
   VariableAssignment,
   IndexAssignment,
   ReturnStatement,
@@ -1356,3 +1357,54 @@ describe('parse() — tuple literals (S-17)', () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+// ─── Import declarations ────────────────────────────────────────────────────
+
+describe('parse() — import declarations', () => {
+  it('parses "import \\"./utils\\"" as ImportDeclaration with path ./utils', () => {
+    const { program, errors } = parseSource('import "./utils"');
+    expect(errors).toHaveLength(0);
+    expect(program.declarations).toHaveLength(1);
+    const decl = program.declarations[0] as ImportDeclaration;
+    expect(decl.kind).toBe('ImportDeclaration');
+    expect(decl.path).toBe('./utils');
+  });
+
+  it('parses "import \\"./math.re\\"" with .re extension', () => {
+    const { program, errors } = parseSource('import "./math.re"');
+    expect(errors).toHaveLength(0);
+    const decl = program.declarations[0] as ImportDeclaration;
+    expect(decl.kind).toBe('ImportDeclaration');
+    expect(decl.path).toBe('./math.re');
+  });
+
+  it('parses import before function declarations without error', () => {
+    const src = 'import "./utils"\nfunction main()\nend';
+    const { program, errors } = parseSource(src);
+    expect(errors).toHaveLength(0);
+    expect(program.declarations).toHaveLength(2);
+    expect(program.declarations[0]!.kind).toBe('ImportDeclaration');
+    expect(program.declarations[1]!.kind).toBe('FunctionDeclaration');
+  });
+
+  it('parses multiple import declarations', () => {
+    const src = 'import "./a"\nimport "./b"\nfunction main()\nend';
+    const { program, errors } = parseSource(src);
+    expect(errors).toHaveLength(0);
+    expect(program.declarations).toHaveLength(3);
+    expect((program.declarations[0] as ImportDeclaration).path).toBe('./a');
+    expect((program.declarations[1] as ImportDeclaration).path).toBe('./b');
+  });
+
+  it('import declaration has empty names array', () => {
+    const { program } = parseSource('import "./utils"');
+    const decl = program.declarations[0] as ImportDeclaration;
+    expect(decl.names).toEqual([]);
+  });
+
+  it('reports error when import path is missing', () => {
+    const { errors } = parseSource('import\nfunction main()\nend');
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+

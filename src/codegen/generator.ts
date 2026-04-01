@@ -5,15 +5,15 @@ import type {
 } from '../ast/nodes.js';
 import { getFunctions } from '../ast/nodes.js';
 import type { YlType, AnalysisResult } from '../semantic/types.js';
-import { INT, FLOAT, STRING, BOOL, VOID, UNKNOWN, isPrimitive, isUnknown, toRustType } from '../semantic/types.js';
+import { VOID, UNKNOWN, isPrimitive, isUnknown, toRustType } from '../semantic/types.js';
 import { RustEmitter } from './rust-emitter.js';
+import { builtinRegistry } from '../semantic/builtins.js';
 
 const INTERP_REGEX = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
 /** Returns true if the type contains UNKNOWN at any level — used to skip Rust type annotations. */
 function typeNeedsInference(type: YlType): boolean {
   if (isUnknown(type)) return true;
-  if (typeof type === 'string') return false;
   if (type.kind === 'option') return typeNeedsInference(type.innerType);
   if (type.kind === 'result') return typeNeedsInference(type.okType) || typeNeedsInference(type.errType);
   if (type.kind === 'array') return typeNeedsInference(type.elementType);
@@ -21,146 +21,9 @@ function typeNeedsInference(type: YlType): boolean {
   return false;
 }
 
-// Lightweight expression type resolver for codegen decisions (e.g. string concatenation)
-function getExprType(expr: Expression, analysis: AnalysisResult, fnName: string): YlType {
-  switch (expr.kind) {
-    case 'Literal': {
-      const litMap: Record<string, YlType> = { int: INT, float: FLOAT, string: STRING, bool: BOOL };
-      return litMap[expr.literalType] ?? UNKNOWN;
-    }
-    case 'Identifier':
-      return analysis.variableTypes.get(`${fnName}:${expr.name}`) ?? UNKNOWN;
-    case 'GroupedExpression':
-      return getExprType(expr.expression, analysis, fnName);
-    case 'UnaryExpression':
-      return expr.operator === 'not' ? BOOL : getExprType(expr.operand, analysis, fnName);
-    case 'BinaryExpression': {
-      if (['==', '!=', '>', '<', '>=', '<=', 'and', 'or'].includes(expr.operator)) return BOOL;
-      const lt = getExprType(expr.left, analysis, fnName);
-      const rt = getExprType(expr.right, analysis, fnName);
-      if (expr.operator === '+' && (isPrimitive(lt, 'string') || isPrimitive(rt, 'string'))) return STRING;
-      return !isUnknown(lt) ? lt : rt;
-    }
-    case 'FunctionCall': {
-      if (expr.name === 'to_string' || expr.name === 'string') return STRING;
-      if (expr.name === 'length') return INT;
-      if (expr.name === 'int') return INT;
-      if (expr.name === 'float') return FLOAT;
-      if (expr.name === 'env' || expr.name === 'env_or') return STRING;
-      if (expr.name === 'read_line' || expr.name === 'prompt') return STRING;
-      if (expr.name === 'args') return { kind: 'array', elementType: STRING };
-      if (expr.name === 'args_count') return INT;
-      if (expr.name === 'read_file') return STRING;
-      if (expr.name === 'file_exists') return BOOL;
-      if (expr.name === 'some') {
-        const innerType = expr.arguments.length >= 1 ? getExprType(expr.arguments[0], analysis, fnName) : UNKNOWN;
-        return { kind: 'option', innerType };
-      }
-      if (expr.name === 'ok') {
-        const okType = expr.arguments.length >= 1 ? getExprType(expr.arguments[0], analysis, fnName) : UNKNOWN;
-        return { kind: 'result', okType, errType: STRING };
-      }
-      if (expr.name === 'err') return { kind: 'result', okType: UNKNOWN, errType: STRING };
-      // Check if calling a closure variable
-      const closureVarType = analysis.variableTypes.get(`${fnName}:${expr.name}`);
-      if (closureVarType && typeof closureVarType !== 'string' && closureVarType.kind === 'function') {
-        return closureVarType.returnType;
-      }
-      return analysis.functionTypes.get(expr.name)?.returnType ?? UNKNOWN;
-    }
-    case 'EnumVariantAccess':
-      return analysis.enumTypes.get(expr.enumName) ?? UNKNOWN;
-    case 'ArrayLiteral': {
-      if (expr.elements.length === 0) return { kind: 'array', elementType: UNKNOWN };
-      return { kind: 'array', elementType: getExprType(expr.elements[0], analysis, fnName) };
-    }
-    case 'MapLiteral': {
-      if (expr.entries.length === 0) return { kind: 'map', keyType: UNKNOWN, valueType: UNKNOWN };
-      return {
-        kind: 'map',
-        keyType: getExprType(expr.entries[0].key, analysis, fnName),
-        valueType: getExprType(expr.entries[0].value, analysis, fnName),
-      };
-    }
-    case 'IndexExpression': {
-      const objType = getExprType(expr.object, analysis, fnName);
-      // Range slice returns the same array type
-      if (expr.index.kind === 'RangeExpression') {
-        if (typeof objType !== 'string' && objType.kind === 'array') return objType;
-        return UNKNOWN;
-      }
-      if (typeof objType !== 'string' && objType.kind === 'array') return objType.elementType;
-      if (typeof objType !== 'string' && objType.kind === 'map') return objType.valueType;
-      return UNKNOWN;
-    }
-    case 'MethodCall': {
-      if (expr.method === 'length') return INT;
-      if (expr.method === 'contains') return BOOL;
-      if (expr.method === 'pop') {
-        const objType = getExprType(expr.object, analysis, fnName);
-        if (typeof objType !== 'string' && objType.kind === 'array') return objType.elementType;
-      }
-      // Map method return types
-      {
-        const objType = getExprType(expr.object, analysis, fnName);
-        if (typeof objType !== 'string' && objType.kind === 'map') {
-          if (expr.method === 'keys') return { kind: 'array', elementType: objType.keyType };
-          if (expr.method === 'values') return { kind: 'array', elementType: objType.valueType };
-        }
-      }
-      if (expr.method === 'starts_with' || expr.method === 'ends_with') return BOOL;
-      if (expr.method === 'to_upper' || expr.method === 'to_lower' || expr.method === 'trim' ||
-          expr.method === 'replace' || expr.method === 'char_at') return STRING;
-      if (expr.method === 'split') return { kind: 'array', elementType: STRING };
-      if (expr.method === 'any' || expr.method === 'all') return BOOL;
-      if (expr.method === 'filter') {
-        const objType = getExprType(expr.object, analysis, fnName);
-        if (typeof objType !== 'string' && objType.kind === 'array') return objType;
-      }
-      if (expr.method === 'map') {
-        // Can't easily infer closure return type here; fall through to UNKNOWN
-      }
-      if (expr.method === 'reduce') {
-        if (expr.arguments.length >= 1) return getExprType(expr.arguments[0], analysis, fnName);
-      }
-      if (expr.method === 'find') {
-        const objType = getExprType(expr.object, analysis, fnName);
-        if (typeof objType !== 'string' && objType.kind === 'array') {
-          return { kind: 'option', innerType: objType.elementType };
-        }
-      }
-      if (expr.method === 'is_some' || expr.method === 'is_none' ||
-          expr.method === 'is_ok' || expr.method === 'is_err') return BOOL;
-      if (expr.method === 'unwrap' || expr.method === 'unwrap_or') {
-        const objType = getExprType(expr.object, analysis, fnName);
-        if (typeof objType !== 'string' && objType.kind === 'option') return objType.innerType;
-        if (typeof objType !== 'string' && objType.kind === 'result') return objType.okType;
-      }
-      // Struct method return type
-      {
-        const objType = getExprType(expr.object, analysis, fnName);
-        if (typeof objType !== 'string' && objType.kind === 'struct') {
-          const methodInfo = analysis.implMethods.get(objType.name)?.get(expr.method);
-          if (methodInfo) return methodInfo.returnType;
-        }
-      }
-      return UNKNOWN;
-    }
-    case 'SelfExpression':
-      return UNKNOWN;
-    case 'NoneLiteral':
-      return { kind: 'option', innerType: UNKNOWN };
-    case 'TupleLiteral': {
-      const elementTypes = expr.elements.map(e => getExprType(e, analysis, fnName));
-      return { kind: 'tuple', elements: elementTypes };
-    }
-    case 'IfExpression': {
-      const thenType = getExprType(expr.thenBranch, analysis, fnName);
-      return isUnknown(thenType) ? getExprType(expr.elseBranch, analysis, fnName) : thenType;
-    }
-    default:
-      return UNKNOWN;
-  }
+/** Read the resolved type stored on an expression node during semantic analysis. */
+function readType(expr: Expression): YlType {
+  return (expr as any).resolvedType ?? UNKNOWN;
 }
 
 function parseInterpolation(str: string): { format: string; vars: string[] } | null {
@@ -203,7 +66,7 @@ function generateMatchPattern(
     case 'EnumPattern': {
       // For unqualified patterns (enumName = ''), infer enum name from match expression type
       const enumName = pattern.enumName ||
-        (typeof matchExprType !== 'string' && matchExprType.kind === 'enum' ? matchExprType.name : '');
+        (matchExprType.kind === 'enum' ? matchExprType.name : '');
       if (pattern.bindings && pattern.bindings.length > 0) {
         const bindingsStr = pattern.bindings.join(', ');
         return `${enumName}::${pattern.variant}(${bindingsStr})`;
@@ -326,13 +189,11 @@ function collectUseStmtsFromStmt(stmt: Statement, emitter: RustEmitter): void {
 function collectUseStmtsFromExpr(expr: Expression, emitter: RustEmitter): void {
   switch (expr.kind) {
     case 'FunctionCall': {
-      const name = expr.name;
-      if (name === 'env' || name === 'env_or') {
-        emitter.addUseStatement('std::env');
-      }
-      if (name === 'read_line' || name === 'prompt') {
-        emitter.addUseStatement('std::io');
-        emitter.addUseStatement('std::io::Write');
+      const builtin = builtinRegistry.get(expr.name);
+      if (builtin?.useStatements) {
+        for (const stmt of builtin.useStatements) {
+          emitter.addUseStatement(stmt);
+        }
       }
       for (const arg of expr.arguments) collectUseStmtsFromExpr(arg, emitter);
       break;
@@ -567,7 +428,7 @@ function generateStatement(
         // Omit type annotation for UNKNOWN types (e.g. range variables — let Rust infer)
         // Also omit for closure (function) types — let Rust infer the closure type
         // Also omit for option/result types that contain UNKNOWN (e.g. none, err(...))
-        const isFunctionType = ylType && typeof ylType !== 'string' && ylType.kind === 'function';
+        const isFunctionType = ylType && ylType.kind === 'function';
         if (!ylType || typeNeedsInference(ylType) || isFunctionType) {
           emitter.emit(`let ${mutKw}${stmt.identifier} = ${expr};`);
         } else {
@@ -664,7 +525,7 @@ function generateStatement(
       break;
     }
     case 'MatchStatement': {
-      const exprType = getExprType(stmt.expression, analysis, fnName);
+      const exprType = readType(stmt.expression);
       const isStringMatch = isPrimitive(exprType, 'string');
       const exprCode = generateExpression(stmt.expression, analysis, fnName);
       const matchSubject = isStringMatch ? `${exprCode}.as_str()` : exprCode;
@@ -686,8 +547,8 @@ function generateStatement(
       const obj = generateExpression(stmt.object, analysis, fnName);
       const idxRaw = generateExpression(stmt.index, analysis, fnName);
       const val = generateExpression(stmt.value, analysis, fnName);
-      const objType = getExprType(stmt.object, analysis, fnName);
-      if (typeof objType !== 'string' && objType.kind === 'map') {
+      const objType = readType(stmt.object);
+      if (objType.kind === 'map') {
         // For maps, use .insert(key, value)
         emitter.emit(`${obj}.insert(${idxRaw}, ${val});`);
       } else {
@@ -856,8 +717,8 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
       const right = generateExpression(expr.right, analysis, fnName);
       // String concatenation: Rust's `+` requires &str on the right, so use format! instead
       if (expr.operator === '+') {
-        const leftType = getExprType(expr.left, analysis, fnName);
-        const rightType = getExprType(expr.right, analysis, fnName);
+        const leftType = readType(expr.left);
+        const rightType = readType(expr.right);
         if (isPrimitive(leftType, 'string') || isPrimitive(rightType, 'string')) {
           return `format!("{}{}", ${left}, ${right})`;
         }
@@ -894,10 +755,10 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
 
     case 'IndexExpression': {
       const obj = generateExpression(expr.object, analysis, fnName);
-      const objType = getExprType(expr.object, analysis, fnName);
-      if (typeof objType !== 'string' && objType.kind === 'map') {
+      const objType = readType(expr.object);
+      if (objType.kind === 'map') {
         const keyType = objType.keyType;
-        const isStringKey = typeof keyType !== 'string' && keyType.kind === 'primitive' && keyType.name === 'string';
+        const isStringKey = keyType.kind === 'primitive' && keyType.name === 'string';
         if (isStringKey) {
           const idx = generateMapStringKey(expr.index, analysis, fnName);
           return `${obj}[${idx}]`;
@@ -918,15 +779,15 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
 
     case 'MethodCall': {
       const obj = generateExpression(expr.object, analysis, fnName);
-      const objType = getExprType(expr.object, analysis, fnName);
+      const objType = readType(expr.object);
       // Map-type methods
-      if (typeof objType !== 'string' && objType.kind === 'map') {
+      if (objType.kind === 'map') {
         switch (expr.method) {
           case 'length':
             return `${obj}.len()`;
           case 'contains': {
             const keyType = objType.keyType;
-            const isStringKey = typeof keyType !== 'string' && keyType.kind === 'primitive' && keyType.name === 'string';
+            const isStringKey = keyType.kind === 'primitive' && keyType.name === 'string';
             const keyArg = expr.arguments[0]
               ? (isStringKey
                   ? generateMapStringKey(expr.arguments[0], analysis, fnName)
@@ -936,7 +797,7 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
           }
           case 'remove': {
             const keyType = objType.keyType;
-            const isStringKey = typeof keyType !== 'string' && keyType.kind === 'primitive' && keyType.name === 'string';
+            const isStringKey = keyType.kind === 'primitive' && keyType.name === 'string';
             const keyArg = expr.arguments[0]
               ? (isStringKey
                   ? generateMapStringKey(expr.arguments[0], analysis, fnName)
@@ -1109,6 +970,8 @@ function generateBuiltinCall(
   fnName: string,
   asStatement: boolean,
 ): string {
+  // print — special-cased because it needs raw AST node access to distinguish
+  // string-literal interpolation (emit format inline) from other expressions (wrap in println!("{}", ...))
   if (name === 'print') {
     const suffix = asStatement ? ';' : '';
     if (args.length > 1) {
@@ -1125,132 +988,19 @@ function generateBuiltinCall(
       }
     }
     const argExpr = arg ? generateExpression(arg, analysis, fnName) : '""';
-    const argType = arg ? getExprType(arg, analysis, fnName) : UNKNOWN;
-    const isEnumType = typeof argType !== 'string' && argType.kind === 'enum';
+    const argType = arg ? readType(arg) : UNKNOWN;
+    const isEnumType = argType.kind === 'enum';
     const fmt = isEnumType ? '{:?}' : '{}';
     return `println!("${fmt}", ${argExpr})${suffix}`;
   }
 
-  if (name === 'length') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '""';
-    return `${argExpr}.len()`;
-  }
-
-  if (name === 'to_string') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '""';
-    return `${argExpr}.to_string()`;
-  }
-
-  if (name === 'int') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '0';
-    const argType = args[0] ? getExprType(args[0], analysis, fnName) : UNKNOWN;
-    if (isPrimitive(argType, 'string')) {
-      return `${argExpr}.parse::<i32>().unwrap()`;
-    }
-    return `${argExpr} as i32`;
-  }
-
-  if (name === 'float') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '0';
-    const argType = args[0] ? getExprType(args[0], analysis, fnName) : UNKNOWN;
-    if (isPrimitive(argType, 'string')) {
-      return `${argExpr}.parse::<f64>().unwrap()`;
-    }
-    return `${argExpr} as f64`;
-  }
-
-  if (name === 'string') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '""';
-    return `${argExpr}.to_string()`;
-  }
-
-  if (name === 'assert') {
-    const condExpr = args[0] ? generateExpression(args[0], analysis, fnName) : 'true';
+  // Other built-in functions — delegate to the registry
+  const builtin = builtinRegistry.get(name);
+  if (builtin) {
+    const genArgs = args.map(a => generateExpression(a, analysis, fnName));
+    const argTypes = args.map(a => readType(a));
     const suffix = asStatement ? ';' : '';
-    if (args.length >= 2) {
-      const msgExpr = generateExpression(args[1], analysis, fnName);
-      return `assert!(${condExpr}, "{}", ${msgExpr})${suffix}`;
-    }
-    return `assert!(${condExpr})${suffix}`;
-  }
-
-  if (name === 'panic') {
-    const msgExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '""';
-    const suffix = asStatement ? ';' : '';
-    return `panic!("{}", ${msgExpr})${suffix}`;
-  }
-
-  if (name === 'env') {
-    const nameExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '""';
-    const suffix = asStatement ? ';' : '';
-    return `std::env::var(${nameExpr}).unwrap_or_default()${suffix}`;
-  }
-
-  if (name === 'env_or') {
-    const nameExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '""';
-    const defaultExpr = args[1] ? generateExpression(args[1], analysis, fnName) : '""';
-    const suffix = asStatement ? ';' : '';
-    return `std::env::var(${nameExpr}).unwrap_or(${defaultExpr}.to_string())${suffix}`;
-  }
-
-  if (name === 'read_line') {
-    // In non-assignment expression context: collapsed single-line block
-    const suffix = asStatement ? ';' : '';
-    return `{ let mut input = String::new(); std::io::stdin().read_line(&mut input).unwrap(); input.trim().to_string() }${suffix}`;
-  }
-
-  if (name === 'prompt') {
-    // In non-assignment expression context: collapsed single-line block
-    const msgExpr = args[0] ? generateExpression(args[0], analysis, fnName) : 'String::from("")';
-    const suffix = asStatement ? ';' : '';
-    return `{ print!("{}", ${msgExpr}); std::io::Write::flush(&mut std::io::stdout()).unwrap(); let mut input = String::new(); std::io::stdin().read_line(&mut input).unwrap(); input.trim().to_string() }${suffix}`;
-  }
-
-  if (name === 'args') {
-    const suffix = asStatement ? ';' : '';
-    return `std::env::args().collect::<Vec<String>>()${suffix}`;
-  }
-
-  if (name === 'args_count') {
-    const suffix = asStatement ? ';' : '';
-    return `std::env::args().count() as i32${suffix}`;
-  }
-
-  if (name === 'read_file') {
-    const pathExpr = args[0] ? generateExpression(args[0], analysis, fnName) : 'String::from("")';
-    const suffix = asStatement ? ';' : '';
-    return `std::fs::read_to_string(${pathExpr}).unwrap()${suffix}`;
-  }
-
-  if (name === 'write_file') {
-    const pathExpr = args[0] ? generateExpression(args[0], analysis, fnName) : 'String::from("")';
-    const contentExpr = args[1] ? generateExpression(args[1], analysis, fnName) : 'String::from("")';
-    const suffix = asStatement ? ';' : '';
-    return `std::fs::write(${pathExpr}, ${contentExpr}).unwrap()${suffix}`;
-  }
-
-  if (name === 'file_exists') {
-    const pathExpr = args[0] ? generateExpression(args[0], analysis, fnName) : 'String::from("")';
-    const suffix = asStatement ? ';' : '';
-    return `std::path::Path::new(&${pathExpr}).exists()${suffix}`;
-  }
-
-  if (name === 'some') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '()';
-    const suffix = asStatement ? ';' : '';
-    return `Some(${argExpr})${suffix}`;
-  }
-
-  if (name === 'ok') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : '()';
-    const suffix = asStatement ? ';' : '';
-    return `Ok(${argExpr})${suffix}`;
-  }
-
-  if (name === 'err') {
-    const argExpr = args[0] ? generateExpression(args[0], analysis, fnName) : 'String::from("")';
-    const suffix = asStatement ? ';' : '';
-    return `Err(${argExpr})${suffix}`;
+    return builtin.generateRust(genArgs, argTypes) + suffix;
   }
 
   // User-defined function call — fill in missing trailing defaults

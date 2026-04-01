@@ -10,8 +10,8 @@ import type { YlType, FunctionInfo, AnalysisResult, EnumVariant } from './types.
 import { INT, FLOAT, STRING, BOOL, VOID, UNKNOWN, isPrimitive, isNumeric, isUnknown, typesEqual, typeToString } from './types.js';
 import { Scope } from './scope.js';
 import { findClosest } from './suggest.js';
-
-const BUILTIN_FUNCTIONS = new Set(['print', 'length', 'to_string', 'int', 'float', 'string', 'assert', 'panic', 'env', 'env_or', 'read_line', 'prompt', 'args', 'args_count', 'read_file', 'write_file', 'append_file', 'file_exists', 'some', 'ok', 'err']);
+import { builtinRegistry } from './builtins.js';
+import { resolveMethodCall } from './method-resolver.js';
 
 export function analyze(program: Program): AnalysisResult {
   const result: AnalysisResult = {
@@ -106,7 +106,7 @@ export function analyze(program: Program): AnalysisResult {
 
   // Register all user functions
   for (const fn of getFunctions(program)) {
-    if (BUILTIN_FUNCTIONS.has(fn.name)) {
+    if (builtinRegistry.has(fn.name)) {
       result.errors.push(createError('semantic', `Cannot redefine built-in function '${fn.name}'`, fn.location));
       continue;
     }
@@ -333,7 +333,6 @@ function splitAtTopLevelComma(s: string): [string, string] {
 
 /** Returns true when a YlType contains 'unknown' at any depth. */
 function typeContainsUnknown(type: YlType): boolean {
-  if (typeof type === 'string') return type === 'unknown';
   switch (type.kind) {
     case 'unknown': return true;
     case 'primitive': return false;
@@ -449,7 +448,7 @@ function collectTypes(
           const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, false);
           let keyType: YlType = UNKNOWN;
           let valueType: YlType = UNKNOWN;
-          if (typeof iterType !== 'string' && iterType.kind === 'map') {
+          if (iterType.kind === 'map') {
             keyType = iterType.keyType;
             valueType = iterType.valueType;
           }
@@ -474,7 +473,7 @@ function collectTypes(
           let loopVarType: YlType = INT;
           if (stmt.iterable.kind !== 'RangeExpression') {
             const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, false);
-            if (typeof iterType !== 'string' && iterType.kind === 'array') {
+            if (iterType.kind === 'array') {
               loopVarType = iterType.elementType;
             }
           }
@@ -498,9 +497,9 @@ function collectTypes(
           if (arm.pattern.kind === 'EnumPattern' && arm.pattern.bindings && arm.pattern.bindings.length > 0) {
             const enumPat = arm.pattern;
             const resolvedName = enumPat.enumName ||
-              (typeof matchExprTypeCollect !== 'string' && matchExprTypeCollect.kind === 'enum' ? matchExprTypeCollect.name : '');
+              (matchExprTypeCollect.kind === 'enum' ? matchExprTypeCollect.name : '');
             const enumTypeVal = resolvedName ? result.enumTypes.get(resolvedName) : undefined;
-            if (enumTypeVal && typeof enumTypeVal !== 'string' && enumTypeVal.kind === 'enum') {
+            if (enumTypeVal && enumTypeVal.kind === 'enum') {
               const variantDef = enumTypeVal.variants.find(v => v.name === enumPat.variant);
               if (variantDef && variantDef.data) {
                 for (let i = 0; i < Math.min(enumPat.bindings.length, variantDef.data.length); i++) {
@@ -529,7 +528,7 @@ function collectTypes(
           // Mark struct receiver as mutable when calling a method that modifies self
           if (mc.object.kind === 'Identifier') {
             const objType = inferExprType(fn, mc.object, scope, result, userFunctions, false);
-            if (typeof objType !== 'string' && objType.kind === 'struct') {
+            if (objType.kind === 'struct') {
               if (result.mutatingMethods.has(`${objType.name}.${mc.method}`)) {
                 result.mutableVariables.add(`${fn.name}:${mc.object.name}`);
               }
@@ -551,7 +550,7 @@ function collectCallSites(
   result: AnalysisResult, callSiteArgs: Map<string, YlType[][]>,
   userFunctions: Map<string, FunctionDeclaration>,
 ): void {
-  if (expr.kind === 'FunctionCall' && !BUILTIN_FUNCTIONS.has(expr.name)) {
+  if (expr.kind === 'FunctionCall' && !builtinRegistry.has(expr.name)) {
     const argTypes = expr.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, false));
     if (!callSiteArgs.has(expr.name)) callSiteArgs.set(expr.name, []);
     callSiteArgs.get(expr.name)!.push(argTypes);
@@ -681,7 +680,7 @@ function validateBody(
           const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, true);
           let keyType: YlType = UNKNOWN;
           let valueType: YlType = UNKNOWN;
-          if (typeof iterType !== 'string' && iterType.kind === 'map') {
+          if (iterType.kind === 'map') {
             keyType = iterType.keyType;
             valueType = iterType.valueType;
           } else if (!isUnknown(iterType)) {
@@ -711,7 +710,7 @@ function validateBody(
             loopVarType = INT;
           } else {
             const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, true);
-            if (typeof iterType !== 'string' && iterType.kind === 'array') {
+            if (iterType.kind === 'array') {
               loopVarType = iterType.elementType;
             } else if (!isUnknown(iterType)) {
               result.errors.push(createError('semantic', `Cannot iterate over non-iterable type '${typeToString(iterType)}'`, stmt.iterable.location));
@@ -741,7 +740,7 @@ function validateBody(
             const enumPat = arm.pattern; // capture narrowed type for use in callbacks
             // Resolve enum name: use qualified name or infer from match expression type
             const resolvedEnumName = enumPat.enumName ||
-              (typeof matchExprType !== 'string' && matchExprType.kind === 'enum' ? matchExprType.name : '');
+              (matchExprType.kind === 'enum' ? matchExprType.name : '');
             const enumType = resolvedEnumName ? result.enumTypes.get(resolvedEnumName) : undefined;
             if (!enumType) {
               if (enumPat.enumName) {
@@ -754,7 +753,7 @@ function validateBody(
               validateBody(fn, arm.body, scope, result, assignmentCount, userFunctions);
             } else {
               let variantDef: EnumVariant | undefined;
-              if (typeof enumType !== 'string' && enumType.kind === 'enum') {
+              if (enumType.kind === 'enum') {
                 variantDef = enumType.variants.find(v => v.name === enumPat.variant);
                 if (!variantDef) {
                   result.errors.push(createError('semantic',
@@ -790,7 +789,7 @@ function validateBody(
           }
         }
         // Exhaustiveness check: only for known enum types
-        if (typeof matchExprType !== 'string' && matchExprType.kind === 'enum') {
+        if (matchExprType.kind === 'enum') {
           const allVariants = new Set(matchExprType.variants.map(v => v.name));
           const coveredVariants = new Set<string>();
           let hasCatchAll = false;
@@ -836,7 +835,7 @@ function validateBody(
         const objectType = inferExprType(fn, stmt.object, scope, result, userFunctions, true);
         const indexType = inferExprType(fn, stmt.index, scope, result, userFunctions, true);
         const valueType = inferExprType(fn, stmt.value, scope, result, userFunctions, true);
-        if (typeof objectType !== 'string' && objectType.kind === 'map') {
+        if (objectType.kind === 'map') {
           if (!isUnknown(objectType.keyType) && !isUnknown(indexType) &&
               !typesEqual(indexType, objectType.keyType)) {
             result.errors.push(createError('semantic',
@@ -849,7 +848,7 @@ function validateBody(
               `Cannot assign '${typeToString(valueType)}' to map value of type '${typeToString(objectType.valueType)}'`,
               stmt.location));
           }
-        } else if (typeof objectType !== 'string' && objectType.kind === 'array') {
+        } else if (objectType.kind === 'array') {
           if (!isUnknown(valueType) && !typesEqual(valueType, objectType.elementType)) {
             result.errors.push(createError('semantic',
               `Cannot assign '${typeToString(valueType)}' to array element of type '${typeToString(objectType.elementType)}'`,
@@ -871,7 +870,7 @@ function validateBody(
       case 'FieldAssignment': {
         result.mutableVariables.add(`${fn.name}:${stmt.object}`);
         const varType = scope.lookup(stmt.object);
-        if (varType !== undefined && typeof varType !== 'string' && varType.kind === 'struct') {
+        if (varType !== undefined && varType.kind === 'struct') {
           const fieldType = varType.fields.get(stmt.field);
           if (fieldType === undefined) {
             result.errors.push(createError('semantic',
@@ -895,7 +894,22 @@ function validateBody(
 }
 
 // --- Expression type inference ---
+
+/**
+ * Thin wrapper: infers the type of `expr` and stores it as `(expr as any).resolvedType`
+ * so the code generator can read types directly from AST nodes (no re-inference needed).
+ */
 function inferExprType(
+  fn: FunctionDeclaration, expr: Expression, scope: Scope,
+  result: AnalysisResult, userFunctions: Map<string, FunctionDeclaration>,
+  reportErrors: boolean,
+): YlType {
+  const t = inferExprTypeCore(fn, expr, scope, result, userFunctions, reportErrors);
+  (expr as any).resolvedType = t;
+  return t;
+}
+
+function inferExprTypeCore(
   fn: FunctionDeclaration, expr: Expression, scope: Scope,
   result: AnalysisResult, userFunctions: Map<string, FunctionDeclaration>,
   reportErrors: boolean,
@@ -947,7 +961,7 @@ function inferExprType(
         }
         return UNKNOWN;
       }
-      if (typeof enumType !== 'string' && enumType.kind === 'enum') {
+      if (enumType.kind === 'enum') {
         const variantDef = enumType.variants.find(v => v.name === expr.variant);
         if (!variantDef && reportErrors) {
           result.errors.push(createError('semantic', `Undefined variant '${expr.variant}' on enum '${expr.enumName}'`, expr.location));
@@ -1028,7 +1042,7 @@ function inferExprType(
       if (expr.index.kind === 'RangeExpression') {
         const startType = inferExprType(fn, expr.index.start, scope, result, userFunctions, reportErrors);
         const endType = inferExprType(fn, expr.index.end, scope, result, userFunctions, reportErrors);
-        if (typeof objectType !== 'string' && objectType.kind === 'array') {
+        if (objectType.kind === 'array') {
           if (reportErrors) {
             if (!isPrimitive(startType, 'int') && !isUnknown(startType)) {
               result.errors.push(createError('semantic',
@@ -1046,7 +1060,7 @@ function inferExprType(
         return UNKNOWN;
       }
       const indexType = inferExprType(fn, expr.index, scope, result, userFunctions, reportErrors);
-      if (typeof objectType !== 'string' && objectType.kind === 'map') {
+      if (objectType.kind === 'map') {
         if (reportErrors && !isUnknown(objectType.keyType) && !isUnknown(indexType) &&
             !typesEqual(indexType, objectType.keyType)) {
           result.errors.push(createError('semantic',
@@ -1056,12 +1070,12 @@ function inferExprType(
         return objectType.valueType;
       }
       if (reportErrors) {
-        if (!isUnknown(objectType) && (typeof objectType === 'string' || objectType.kind !== 'array')) {
+        if (!isUnknown(objectType) && objectType.kind !== 'array') {
           result.errors.push(createError('semantic',
             `Cannot index into non-array/map type '${typeToString(objectType)}'`,
             expr.location));
         }
-        if (typeof objectType === 'string' || objectType.kind === 'array') {
+        if (objectType.kind === 'array') {
           if (!isPrimitive(indexType, 'int') && !isUnknown(indexType)) {
             result.errors.push(createError('semantic',
               `Array index must be int, got '${typeToString(indexType)}'`,
@@ -1069,325 +1083,33 @@ function inferExprType(
           }
         }
       }
-      if (typeof objectType !== 'string' && objectType.kind === 'array') {
+      if (objectType.kind === 'array') {
         return objectType.elementType;
       }
       return UNKNOWN;
     }
     case 'MethodCall': {
       const objectType = inferExprType(fn, expr.object, scope, result, userFunctions, reportErrors);
-      // Map type methods
-      const isMapType = typeof objectType !== 'string' && objectType.kind === 'map';
-      if (isMapType) {
-        const mapType = objectType as { kind: 'map'; keyType: YlType; valueType: YlType };
-        switch (expr.method) {
-          case 'length':
-            return INT;
-          case 'contains': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic',
-                `'contains' requires exactly 1 argument, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              const argType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-              if (reportErrors && !isUnknown(mapType.keyType) && !isUnknown(argType) &&
-                  !typesEqual(argType, mapType.keyType)) {
-                result.errors.push(createError('semantic',
-                  `'contains' key must be '${typeToString(mapType.keyType)}', got '${typeToString(argType)}'`,
-                  expr.location));
-              }
-            }
-            return BOOL;
-          }
-          case 'remove': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic',
-                `'remove' requires exactly 1 argument, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-            }
-            markRootAsMutable(fn, expr.object, result);
-            return VOID;
-          }
-          case 'keys':
-            return { kind: 'array', elementType: mapType.keyType };
-          case 'values':
-            return { kind: 'array', elementType: mapType.valueType };
-          default:
-            if (reportErrors) {
-              result.errors.push(createError('semantic',
-                `Unknown map method '${expr.method}'`,
-                expr.location));
-            }
-            return UNKNOWN;
-        }
+      // Pre-compute argument types (also triggers error reporting for each arg)
+      const argTypes = expr.arguments.map(arg => inferExprType(fn, arg, scope, result, userFunctions, reportErrors));
+      // Look up struct methods if applicable
+      const structMethods = objectType.kind === 'struct'
+        ? result.implMethods.get(objectType.name)
+        : undefined;
+      const { returnType, markMutable } = resolveMethodCall(
+        objectType,
+        expr.method,
+        expr.arguments.length,
+        argTypes,
+        expr.location,
+        result.errors,
+        reportErrors,
+        structMethods,
+      );
+      if (markMutable) {
+        markRootAsMutable(fn, expr.object, result);
       }
-      const isArrayType = typeof objectType !== 'string' && objectType.kind === 'array';
-      if (isArrayType || isUnknown(objectType)) {
-        if (expr.method === 'push') {
-          if (expr.arguments.length >= 1) {
-            const argType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-            if (reportErrors && isArrayType && !isUnknown(argType)) {
-              const arrType = objectType as { kind: 'array'; elementType: YlType };
-              if (!isUnknown(arrType.elementType) && !typesEqual(argType, arrType.elementType)) {
-                result.errors.push(createError('semantic',
-                  `Cannot push '${typeToString(argType)}' to array of '${typeToString(arrType.elementType)}'`,
-                  expr.location));
-              }
-            }
-          }
-          markRootAsMutable(fn, expr.object, result);
-          return VOID;
-        }
-        if (expr.method === 'pop') {
-          markRootAsMutable(fn, expr.object, result);
-          if (isArrayType) return (objectType as { kind: 'array'; elementType: YlType }).elementType;
-          return UNKNOWN;
-        }
-        if (expr.method === 'length') {
-          return INT;
-        }
-        if (expr.method === 'map') {
-          if (reportErrors && expr.arguments.length !== 1) {
-            result.errors.push(createError('semantic',
-              `'map' requires exactly 1 closure argument, got ${expr.arguments.length}`,
-              expr.location));
-          }
-          // Infer the closure's return type to determine the output element type
-          if (expr.arguments.length === 1) {
-            const closureType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, false);
-            if (typeof closureType !== 'string' && closureType.kind === 'function') {
-              return { kind: 'array', elementType: closureType.returnType };
-            }
-          }
-          return { kind: 'array', elementType: UNKNOWN };
-        }
-        if (expr.method === 'filter') {
-          if (reportErrors && expr.arguments.length !== 1) {
-            result.errors.push(createError('semantic',
-              `'filter' requires exactly 1 closure argument, got ${expr.arguments.length}`,
-              expr.location));
-          }
-          // Returns same array type
-          if (isArrayType) return objectType as { kind: 'array'; elementType: YlType };
-          return { kind: 'array', elementType: UNKNOWN };
-        }
-        if (expr.method === 'reduce') {
-          if (reportErrors && expr.arguments.length !== 2) {
-            result.errors.push(createError('semantic',
-              `'reduce' requires exactly 2 arguments (initial value and closure), got ${expr.arguments.length}`,
-              expr.location));
-          }
-          // Return type is the type of the initial value
-          if (expr.arguments.length >= 1) {
-            return inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-          }
-          return UNKNOWN;
-        }
-        if (expr.method === 'any' || expr.method === 'all') {
-          if (reportErrors && expr.arguments.length !== 1) {
-            result.errors.push(createError('semantic',
-              `'${expr.method}' requires exactly 1 closure argument, got ${expr.arguments.length}`,
-              expr.location));
-          }
-          return BOOL;
-        }
-        if (expr.method === 'find') {
-          if (reportErrors && expr.arguments.length !== 1) {
-            result.errors.push(createError('semantic',
-              `'find' requires exactly 1 closure argument, got ${expr.arguments.length}`,
-              expr.location));
-          }
-          const elemType = isArrayType
-            ? (objectType as { kind: 'array'; elementType: YlType }).elementType
-            : UNKNOWN;
-          return { kind: 'option', innerType: elemType };
-        }
-        if (reportErrors) {
-          result.errors.push(createError('semantic',
-            `Unknown array method '${expr.method}'`,
-            expr.location));
-        }
-        return UNKNOWN;
-      }
-      // String methods
-      if (isPrimitive(objectType, 'string')) {
-        switch (expr.method) {
-          case 'length':
-            return INT;
-          case 'contains':
-          case 'starts_with':
-          case 'ends_with': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic',
-                `'${expr.method}' requires exactly 1 argument, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              const argType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-              if (reportErrors && !isPrimitive(argType, 'string') && !isUnknown(argType)) {
-                result.errors.push(createError('semantic',
-                  `'${expr.method}' requires a string argument, got '${typeToString(argType)}'`,
-                  expr.location));
-              }
-            }
-            return BOOL;
-          }
-          case 'to_upper':
-          case 'to_lower':
-          case 'trim': {
-            if (reportErrors && expr.arguments.length !== 0) {
-              result.errors.push(createError('semantic',
-                `'${expr.method}' takes no arguments, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            return STRING;
-          }
-          case 'replace': {
-            if (reportErrors && expr.arguments.length !== 2) {
-              result.errors.push(createError('semantic',
-                `'replace' requires exactly 2 arguments, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            for (const arg of expr.arguments) {
-              const argType = inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
-              if (reportErrors && !isPrimitive(argType, 'string') && !isUnknown(argType)) {
-                result.errors.push(createError('semantic',
-                  `'replace' requires string arguments, got '${typeToString(argType)}'`,
-                  expr.location));
-              }
-            }
-            return STRING;
-          }
-          case 'split': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic',
-                `'split' requires exactly 1 argument, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              const argType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-              if (reportErrors && !isPrimitive(argType, 'string') && !isUnknown(argType)) {
-                result.errors.push(createError('semantic',
-                  `'split' requires a string argument, got '${typeToString(argType)}'`,
-                  expr.location));
-              }
-            }
-            return { kind: 'array', elementType: STRING };
-          }
-          case 'char_at': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic',
-                `'char_at' requires exactly 1 argument, got ${expr.arguments.length}`,
-                expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              const argType = inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-              if (reportErrors && !isPrimitive(argType, 'int') && !isUnknown(argType)) {
-                result.errors.push(createError('semantic',
-                  `'char_at' requires an int argument, got '${typeToString(argType)}'`,
-                  expr.location));
-              }
-            }
-            return STRING;
-          }
-          default:
-            if (reportErrors) {
-              result.errors.push(createError('semantic',
-                `Unknown string method '${expr.method}'`,
-                expr.location));
-            }
-            return UNKNOWN;
-        }
-      }
-      // Option type methods
-      if (typeof objectType !== 'string' && objectType.kind === 'option') {
-        const innerType = objectType.innerType;
-        switch (expr.method) {
-          case 'unwrap':
-            if (reportErrors && expr.arguments.length !== 0) {
-              result.errors.push(createError('semantic', `'unwrap' takes no arguments`, expr.location));
-            }
-            return innerType;
-          case 'unwrap_or': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic', `'unwrap_or' requires exactly 1 argument`, expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-            }
-            return innerType;
-          }
-          case 'is_some':
-          case 'is_none':
-            if (reportErrors && expr.arguments.length !== 0) {
-              result.errors.push(createError('semantic', `'${expr.method}' takes no arguments`, expr.location));
-            }
-            return BOOL;
-          default:
-            if (reportErrors) {
-              result.errors.push(createError('semantic', `Unknown option method '${expr.method}'`, expr.location));
-            }
-            return UNKNOWN;
-        }
-      }
-      // Result type methods
-      if (typeof objectType !== 'string' && objectType.kind === 'result') {
-        const okType = objectType.okType;
-        switch (expr.method) {
-          case 'unwrap':
-            if (reportErrors && expr.arguments.length !== 0) {
-              result.errors.push(createError('semantic', `'unwrap' takes no arguments`, expr.location));
-            }
-            return okType;
-          case 'unwrap_or': {
-            if (reportErrors && expr.arguments.length !== 1) {
-              result.errors.push(createError('semantic', `'unwrap_or' requires exactly 1 argument`, expr.location));
-            }
-            if (expr.arguments.length >= 1) {
-              inferExprType(fn, expr.arguments[0], scope, result, userFunctions, reportErrors);
-            }
-            return okType;
-          }
-          case 'is_ok':
-          case 'is_err':
-            if (reportErrors && expr.arguments.length !== 0) {
-              result.errors.push(createError('semantic', `'${expr.method}' takes no arguments`, expr.location));
-            }
-            return BOOL;
-          default:
-            if (reportErrors) {
-              result.errors.push(createError('semantic', `Unknown result method '${expr.method}'`, expr.location));
-            }
-            return UNKNOWN;
-        }
-      }
-      // Struct methods
-      if (typeof objectType !== 'string' && objectType.kind === 'struct') {
-        const structMethods = result.implMethods.get(objectType.name);
-        const methodInfo = structMethods?.get(expr.method);
-        if (methodInfo) {
-          for (const arg of expr.arguments) {
-            inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
-          }
-          return methodInfo.returnType;
-        }
-        if (reportErrors) {
-          result.errors.push(createError('semantic',
-            `Struct '${objectType.name}' has no method '${expr.method}'`,
-            expr.location));
-        }
-        return UNKNOWN;
-      }
-      if (reportErrors) {
-        result.errors.push(createError('semantic',
-          `Cannot call method '${expr.method}' on type '${typeToString(objectType)}'`,
-          expr.location));
-      }
-      return UNKNOWN;
+      return returnType;
     }
     case 'SelfExpression':
       return scope.lookup('self') ?? UNKNOWN;
@@ -1436,7 +1158,7 @@ function inferExprType(
     }
     case 'FieldAccess': {
       const objectType = inferExprType(fn, expr.object, scope, result, userFunctions, reportErrors);
-      if (typeof objectType !== 'string' && objectType.kind === 'tuple') {
+      if (objectType.kind === 'tuple') {
         const idx = parseInt(expr.field, 10);
         if (!isNaN(idx) && idx >= 0 && idx < objectType.elements.length) {
           return objectType.elements[idx]!;
@@ -1447,7 +1169,7 @@ function inferExprType(
         }
         return UNKNOWN;
       }
-      if (typeof objectType !== 'string' && objectType.kind === 'struct') {
+      if (objectType.kind === 'struct') {
         const fieldType = objectType.fields.get(expr.field);
         if (fieldType !== undefined) return fieldType;
         if (reportErrors) {
@@ -1573,237 +1295,16 @@ function inferCallType(
   scope: Scope, result: AnalysisResult,
   userFunctions: Map<string, FunctionDeclaration>, reportErrors: boolean,
 ): YlType {
-  // Built-in functions
-  if (call.name === 'print') {
-    if (reportErrors && call.arguments.length === 0) {
-      result.errors.push(createError('semantic', `'print' requires at least 1 argument`, call.location));
-    }
-    for (const arg of call.arguments) {
-      inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
-    }
-    return VOID;
-  }
-  if (call.name === 'length') {
-    if (call.arguments.length === 1) {
-      const argType = inferExprType(fn, call.arguments[0], scope, result, userFunctions, reportErrors);
-      const isArr = typeof argType !== 'string' && argType.kind === 'array';
-      if (reportErrors && !isPrimitive(argType, 'string') && !isArr && !isUnknown(argType)) {
-        result.errors.push(createError('semantic', `'length' requires string or array argument, got '${typeToString(argType)}'`, call.location));
-      }
-    }
-    return INT;
-  }
-  if (call.name === 'to_string') {
-    for (const arg of call.arguments) {
-      inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
-    }
-    return STRING;
-  }
-  if (call.name === 'int') {
-    if (reportErrors && call.arguments.length !== 1) {
-      result.errors.push(createError('semantic', `'int' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-    }
-    if (call.arguments.length >= 1) {
-      const argType = inferExprType(fn, call.arguments[0], scope, result, userFunctions, reportErrors);
-      if (reportErrors && !isNumeric(argType) && !isPrimitive(argType, 'string') && !isUnknown(argType)) {
-        result.errors.push(createError('semantic', `'int' requires numeric or string argument, got '${typeToString(argType)}'`, call.location));
-      }
-    }
-    return INT;
-  }
-  if (call.name === 'float') {
-    if (reportErrors && call.arguments.length !== 1) {
-      result.errors.push(createError('semantic', `'float' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-    }
-    if (call.arguments.length >= 1) {
-      const argType = inferExprType(fn, call.arguments[0], scope, result, userFunctions, reportErrors);
-      if (reportErrors && !isNumeric(argType) && !isPrimitive(argType, 'string') && !isUnknown(argType)) {
-        result.errors.push(createError('semantic', `'float' requires numeric or string argument, got '${typeToString(argType)}'`, call.location));
-      }
-    }
-    return FLOAT;
-  }
-  if (call.name === 'string') {
-    if (reportErrors && call.arguments.length !== 1) {
-      result.errors.push(createError('semantic', `'string' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-    }
-    for (const arg of call.arguments) {
-      inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
-    }
-    return STRING;
-  }
-  if (call.name === 'assert') {
+  // Built-in functions — delegate to the registry
+  const builtin = builtinRegistry.get(call.name);
+  if (builtin) {
     const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length < 1 || call.arguments.length > 2) {
-        result.errors.push(createError('semantic', `'assert' requires 1 or 2 arguments, got ${call.arguments.length}`, call.location));
-      } else {
-        if (!isPrimitive(argTypes[0], 'bool') && !isUnknown(argTypes[0])) {
-          result.errors.push(createError('semantic', `'assert' first argument must be bool, got '${typeToString(argTypes[0])}'`, call.location));
-        }
-        if (call.arguments.length === 2 && !isPrimitive(argTypes[1], 'string') && !isUnknown(argTypes[1])) {
-          result.errors.push(createError('semantic', `'assert' second argument must be string, got '${typeToString(argTypes[1])}'`, call.location));
-        }
-      }
-    }
-    return VOID;
-  }
-  if (call.name === 'panic') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 1) {
-        result.errors.push(createError('semantic', `'panic' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-      } else if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-        result.errors.push(createError('semantic', `'panic' requires string argument, got '${typeToString(argTypes[0])}'`, call.location));
-      }
-    }
-    return VOID;
-  }
-  if (call.name === 'env') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 1) {
-        result.errors.push(createError('semantic', `'env' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-      } else if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-        result.errors.push(createError('semantic', `'env' requires string argument, got '${typeToString(argTypes[0])}'`, call.location));
-      }
-    }
-    return STRING;
-  }
-  if (call.name === 'env_or') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 2) {
-        result.errors.push(createError('semantic', `'env_or' requires exactly 2 arguments, got ${call.arguments.length}`, call.location));
-      } else {
-        if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-          result.errors.push(createError('semantic', `'env_or' first argument must be string, got '${typeToString(argTypes[0])}'`, call.location));
-        }
-        if (!isPrimitive(argTypes[1], 'string') && !isUnknown(argTypes[1])) {
-          result.errors.push(createError('semantic', `'env_or' second argument must be string, got '${typeToString(argTypes[1])}'`, call.location));
-        }
-      }
-    }
-    return STRING;
-  }
-  if (call.name === 'read_line') {
-    if (reportErrors && call.arguments.length !== 0) {
-      result.errors.push(createError('semantic', `'read_line' takes no arguments, got ${call.arguments.length}`, call.location));
-    }
-    return STRING;
-  }
-  if (call.name === 'prompt') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 1) {
-        result.errors.push(createError('semantic', `'prompt' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-      } else if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-        result.errors.push(createError('semantic', `'prompt' requires string argument, got '${typeToString(argTypes[0])}'`, call.location));
-      }
-    }
-    return STRING;
-  }
-  if (call.name === 'args') {
-    if (reportErrors && call.arguments.length !== 0) {
-      result.errors.push(createError('semantic', `'args' takes no arguments, got ${call.arguments.length}`, call.location));
-    }
-    return { kind: 'array', elementType: STRING };
-  }
-  if (call.name === 'args_count') {
-    if (reportErrors && call.arguments.length !== 0) {
-      result.errors.push(createError('semantic', `'args_count' takes no arguments, got ${call.arguments.length}`, call.location));
-    }
-    return INT;
-  }
-  if (call.name === 'read_file') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 1) {
-        result.errors.push(createError('semantic', `'read_file' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-      } else if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-        result.errors.push(createError('semantic', `'read_file' requires string argument, got '${typeToString(argTypes[0])}'`, call.location));
-      }
-    }
-    return STRING;
-  }
-  if (call.name === 'write_file') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 2) {
-        result.errors.push(createError('semantic', `'write_file' requires exactly 2 arguments, got ${call.arguments.length}`, call.location));
-      } else {
-        if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-          result.errors.push(createError('semantic', `'write_file' first argument must be string, got '${typeToString(argTypes[0])}'`, call.location));
-        }
-        if (!isPrimitive(argTypes[1], 'string') && !isUnknown(argTypes[1])) {
-          result.errors.push(createError('semantic', `'write_file' second argument must be string, got '${typeToString(argTypes[1])}'`, call.location));
-        }
-      }
-    }
-    return VOID;
-  }
-  if (call.name === 'append_file') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 2) {
-        result.errors.push(createError('semantic', `'append_file' requires exactly 2 arguments, got ${call.arguments.length}`, call.location));
-      } else {
-        if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-          result.errors.push(createError('semantic', `'append_file' first argument must be string, got '${typeToString(argTypes[0])}'`, call.location));
-        }
-        if (!isPrimitive(argTypes[1], 'string') && !isUnknown(argTypes[1])) {
-          result.errors.push(createError('semantic', `'append_file' second argument must be string, got '${typeToString(argTypes[1])}'`, call.location));
-        }
-      }
-    }
-    return VOID;
-  }
-  if (call.name === 'file_exists') {
-    const argTypes = call.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, reportErrors));
-    if (reportErrors) {
-      if (call.arguments.length !== 1) {
-        result.errors.push(createError('semantic', `'file_exists' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-      } else if (!isPrimitive(argTypes[0], 'string') && !isUnknown(argTypes[0])) {
-        result.errors.push(createError('semantic', `'file_exists' requires string argument, got '${typeToString(argTypes[0])}'`, call.location));
-      }
-    }
-    return BOOL;
-  }
-
-  if (call.name === 'some') {
-    if (reportErrors && call.arguments.length !== 1) {
-      result.errors.push(createError('semantic', `'some' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-    }
-    const argType = call.arguments.length >= 1
-      ? inferExprType(fn, call.arguments[0], scope, result, userFunctions, reportErrors)
-      : UNKNOWN;
-    return { kind: 'option', innerType: argType };
-  }
-  if (call.name === 'ok') {
-    if (reportErrors && call.arguments.length !== 1) {
-      result.errors.push(createError('semantic', `'ok' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-    }
-    const argType = call.arguments.length >= 1
-      ? inferExprType(fn, call.arguments[0], scope, result, userFunctions, reportErrors)
-      : UNKNOWN;
-    return { kind: 'result', okType: argType, errType: STRING };
-  }
-  if (call.name === 'err') {
-    if (reportErrors && call.arguments.length !== 1) {
-      result.errors.push(createError('semantic', `'err' requires exactly 1 argument, got ${call.arguments.length}`, call.location));
-    }
-    if (call.arguments.length >= 1) {
-      const argType = inferExprType(fn, call.arguments[0], scope, result, userFunctions, reportErrors);
-      if (reportErrors && !isPrimitive(argType, 'string') && !isUnknown(argType)) {
-        result.errors.push(createError('semantic', `'err' requires a string argument, got '${typeToString(argType)}'`, call.location));
-      }
-    }
-    return { kind: 'result', okType: UNKNOWN, errType: STRING };
+    return builtin.validate(argTypes, call.location, result.errors, reportErrors);
   }
 
   // Check if call.name refers to a closure variable in scope
   const closureType = scope.lookup(call.name);
-  if (closureType && typeof closureType !== 'string' && closureType.kind === 'function') {
+  if (closureType && closureType.kind === 'function') {
     for (const arg of call.arguments) {
       inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
     }
@@ -1813,7 +1314,7 @@ function inferCallType(
   // User-defined functions
   const fnInfo = result.functionTypes.get(call.name);
   if (!fnInfo && reportErrors) {
-    const fnCandidates = [...userFunctions.keys(), ...BUILTIN_FUNCTIONS];
+    const fnCandidates = [...userFunctions.keys(), ...builtinRegistry.keys()];
     const match = findClosest(call.name, fnCandidates);
     const suggestion = match !== null ? ` — did you mean '${match}'?` : '';
     result.errors.push(createError('semantic', `Undefined function '${call.name}'${suggestion}`, call.location));

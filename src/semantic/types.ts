@@ -11,7 +11,6 @@ export interface EnumVariant {
 // ─── Discriminated union type system ─────────────────────────────────────────
 
 export type YlType =
-  // New structured type variants
   | { kind: 'primitive'; name: 'int' | 'float' | 'string' | 'bool' | 'void' }
   | { kind: 'array'; elementType: YlType }
   | { kind: 'tuple'; elements: YlType[] }
@@ -22,10 +21,7 @@ export type YlType =
   | { kind: 'enum'; name: string; variants: EnumVariant[] }
   | { kind: 'function'; params: YlType[]; returnType: YlType }
   | { kind: 'named'; name: string }
-  | { kind: 'unknown' }
-  // Legacy string literals kept for backward compatibility while analyzer.ts,
-  // scope.ts, and generator.ts are migrated (P1-S05 / P1-S06).
-  | 'int' | 'float' | 'string' | 'bool' | 'void' | 'unknown';
+  | { kind: 'unknown' };
 
 // ─── Primitive constants ──────────────────────────────────────────────────────
 
@@ -40,23 +36,17 @@ export const UNKNOWN: YlType = { kind: 'unknown' };
 
 /** Returns true when `type` is a primitive, optionally matching a specific name. */
 export function isPrimitive(type: YlType, name?: 'int' | 'float' | 'string' | 'bool' | 'void'): boolean {
-  if (typeof type === 'string') {
-    if (type === 'unknown') return false;
-    return name === undefined || type === name;
-  }
   if (type.kind !== 'primitive') return false;
   return name === undefined || type.name === name;
 }
 
-/** Returns true for int and float (both legacy strings and new objects). */
+/** Returns true for int and float. */
 export function isNumeric(type: YlType): boolean {
-  if (typeof type === 'string') return type === 'int' || type === 'float';
   return type.kind === 'primitive' && (type.name === 'int' || type.name === 'float');
 }
 
 /** Returns true when the type represents an unknown / unresolved type. */
 export function isUnknown(type: YlType): boolean {
-  if (typeof type === 'string') return type === 'unknown';
   return type.kind === 'unknown';
 }
 
@@ -64,67 +54,58 @@ export function isUnknown(type: YlType): boolean {
 
 /** Structural deep equality for two YlType values. */
 export function typesEqual(a: YlType, b: YlType): boolean {
-  if (typeof a === 'string' && typeof b === 'string') return a === b;
-  const na = normaliseLegacy(a);
-  const nb = normaliseLegacy(b);
-  if (na.kind !== nb.kind) return false;
-  switch (na.kind) {
-    case 'primitive': return na.name === (nb as typeof na).name;
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'primitive': return a.name === (b as typeof a).name;
     case 'unknown':   return true;
-    case 'named':     return na.name === (nb as typeof na).name;
-    case 'array':     return typesEqual(na.elementType, (nb as typeof na).elementType);
+    case 'named':     return a.name === (b as typeof a).name;
+    case 'array':     return typesEqual(a.elementType, (b as typeof a).elementType);
     case 'tuple': {
-      const nb2 = nb as typeof na;
-      return na.elements.length === nb2.elements.length &&
-        na.elements.every((e, i) => typesEqual(e, nb2.elements[i]));
+      const b2 = b as typeof a;
+      return a.elements.length === b2.elements.length &&
+        a.elements.every((e, i) => typesEqual(e, b2.elements[i]));
     }
     case 'map': {
-      const nb2 = nb as typeof na;
-      return typesEqual(na.keyType, nb2.keyType) && typesEqual(na.valueType, nb2.valueType);
+      const b2 = b as typeof a;
+      return typesEqual(a.keyType, b2.keyType) && typesEqual(a.valueType, b2.valueType);
     }
-    case 'option': return typesEqual(na.innerType, (nb as typeof na).innerType);
+    case 'option': return typesEqual(a.innerType, (b as typeof a).innerType);
     case 'result': {
-      const nb2 = nb as typeof na;
-      return typesEqual(na.okType, nb2.okType) && typesEqual(na.errType, nb2.errType);
+      const b2 = b as typeof a;
+      return typesEqual(a.okType, b2.okType) && typesEqual(a.errType, b2.errType);
     }
     case 'struct': {
-      const nb2 = nb as typeof na;
-      if (na.name !== nb2.name || na.fields.size !== nb2.fields.size) return false;
-      for (const [k, v] of na.fields) {
-        const bv = nb2.fields.get(k);
+      const b2 = b as typeof a;
+      if (a.name !== b2.name || a.fields.size !== b2.fields.size) return false;
+      for (const [k, v] of a.fields) {
+        const bv = b2.fields.get(k);
         if (bv === undefined || !typesEqual(v, bv)) return false;
       }
       return true;
     }
     case 'enum': {
-      const nb2 = nb as typeof na;
-      if (na.name !== nb2.name || na.variants.length !== nb2.variants.length) return false;
-      return na.variants.every((v, i) => {
-        const bv = nb2.variants[i];
+      const b2 = b as typeof a;
+      if (a.name !== b2.name || a.variants.length !== b2.variants.length) return false;
+      return a.variants.every((v, i) => {
+        const bv = b2.variants[i];
         if (v.name !== bv.name) return false;
         if ((v.data?.length ?? 0) !== (bv.data?.length ?? 0)) return false;
         return (v.data ?? []).every((t, j) => typesEqual(t, bv.data![j]));
       });
     }
     case 'function': {
-      const nb2 = nb as typeof na;
-      return typesEqual(na.returnType, nb2.returnType) &&
-        na.params.length === nb2.params.length &&
-        na.params.every((p, i) => typesEqual(p, nb2.params[i]));
+      const b2 = b as typeof a;
+      return typesEqual(a.returnType, b2.returnType) &&
+        a.params.length === b2.params.length &&
+        a.params.every((p, i) => typesEqual(p, b2.params[i]));
     }
   }
 }
 
 // ─── Rust type string generation ──────────────────────────────────────────────
 
-/** Convert a YlType to its Rust type representation. Replaces the YL_TO_RUST_TYPE map. */
+/** Convert a YlType to its Rust type representation. */
 export function toRustType(type: YlType): string {
-  if (typeof type === 'string') {
-    const legacyMap: Record<string, string> = {
-      int: 'i32', float: 'f64', string: 'String', bool: 'bool', void: '()', unknown: '/* unknown */',
-    };
-    return legacyMap[type] ?? '/* unknown */';
-  }
   switch (type.kind) {
     case 'primitive': {
       const map: Record<string, string> = {
@@ -150,7 +131,6 @@ export function toRustType(type: YlType): string {
 
 /** Convert a YlType to a human-readable display string. */
 export function typeToString(type: YlType): string {
-  if (typeof type === 'string') return type;
   switch (type.kind) {
     case 'primitive': return type.name;
     case 'array':     return `array<${typeToString(type.elementType)}>`;
@@ -167,15 +147,6 @@ export function typeToString(type: YlType): string {
     }
     case 'unknown':   return 'unknown';
   }
-}
-
-// ─── Internal helper ──────────────────────────────────────────────────────────
-
-/** Normalise a legacy string YlType to its structured equivalent for comparison. */
-function normaliseLegacy(type: YlType): Exclude<YlType, string> {
-  if (typeof type !== 'string') return type;
-  if (type === 'unknown') return { kind: 'unknown' };
-  return { kind: 'primitive', name: type as 'int' | 'float' | 'string' | 'bool' | 'void' };
 }
 
 // ─── Existing interfaces (unchanged) ─────────────────────────────────────────
@@ -209,20 +180,4 @@ export interface AnalysisResult {
   warnings: CompilerError[];
 }
 
-// ─── Deprecated backward-compat alias ────────────────────────────────────────
 
-/**
- * @deprecated Use `toRustType()` instead.
- *
- * Retained while generator.ts is migrated in P1-S06. Typed as
- * `Record<string, string>` (not `Record<YlType, string>`) so that callers
- * that index it with a legacy string YlType continue to compile.
- */
-export const YL_TO_RUST_TYPE: Record<string, string> = {
-  int: 'i32',
-  float: 'f64',
-  string: 'String',
-  bool: 'bool',
-  void: '()',
-  unknown: '/* unknown */',
-};

@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { resolve, basename } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compile } from '../index.js';
 import { getFunctions } from '../ast/nodes.js';
@@ -79,7 +79,7 @@ interface BuildRunOptions extends BaseOptions {
 
 function runCompile(file: string, opts: BaseOptions): ReturnType<typeof compile> {
   const source = readSourceFile(file);
-  const filename = basename(file);
+  const filename = resolve(file);
   const result = compile(source, filename);
 
   if (opts.emitTokens && result.tokens) {

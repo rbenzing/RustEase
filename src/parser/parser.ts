@@ -7,6 +7,7 @@ import type {
   ConstDeclaration,
   StructDeclaration,
   EnumDeclaration,
+  ImportDeclaration,
   Parameter,
   Statement,
   Expression,
@@ -141,9 +142,11 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
         declarations.push(parseEnumDeclaration());
       } else if (check(TokenType.Impl)) {
         declarations.push(parseImplDeclaration());
-      } else if (check(TokenType.Import) || check(TokenType.From)) {
+      } else if (check(TokenType.Import)) {
+        declarations.push(parseImportDeclaration());
+      } else if (check(TokenType.From)) {
         const token = peek();
-        errors.push(createError('parser', `'import' is not yet supported in RustEase`, token.location));
+        errors.push(createError('parser', `'from ... import' syntax is not yet supported; use 'import "./path"' instead`, token.location));
         synchronize();
       } else {
         const token = peek();
@@ -154,6 +157,13 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     }
 
     return { kind: 'Program', declarations, location };
+  }
+
+  function parseImportDeclaration(): ImportDeclaration {
+    const location = currentLocation();
+    advance(); // consume 'import'
+    const pathTok = expect(TokenType.String, "Expected file path string after 'import'");
+    return { kind: 'ImportDeclaration', path: pathTok.value, names: [], location };
   }
 
   function parseTopLevelConst(): ConstDeclaration {

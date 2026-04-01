@@ -1,55 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-  YL_TO_RUST_TYPE,
   isPrimitive, isUnknown, isNumeric, typesEqual, toRustType, typeToString,
   INT, FLOAT, STRING, BOOL, VOID, UNKNOWN,
 } from '../../src/semantic/types.js';
 import type { YlType } from '../../src/semantic/types.js';
-
-describe('YL_TO_RUST_TYPE mapping', () => {
-  it('maps int to i32', () => {
-    expect(YL_TO_RUST_TYPE['int']).toBe('i32');
-  });
-
-  it('maps float to f64', () => {
-    expect(YL_TO_RUST_TYPE['float']).toBe('f64');
-  });
-
-  it('maps string to String', () => {
-    expect(YL_TO_RUST_TYPE['string']).toBe('String');
-  });
-
-  it('maps bool to bool', () => {
-    expect(YL_TO_RUST_TYPE['bool']).toBe('bool');
-  });
-
-  it('maps void to ()', () => {
-    expect(YL_TO_RUST_TYPE['void']).toBe('()');
-  });
-
-  it('maps unknown to /* unknown */', () => {
-    expect(YL_TO_RUST_TYPE['unknown']).toBe('/* unknown */');
-  });
-
-  it('covers all 6 YlType values', () => {
-    const ylTypes: YlType[] = ['int', 'float', 'string', 'bool', 'void', 'unknown'];
-    for (const t of ylTypes) {
-      expect(YL_TO_RUST_TYPE[t]).toBeDefined();
-    }
-  });
-
-  it('has exactly 6 entries', () => {
-    const entries = Object.keys(YL_TO_RUST_TYPE);
-    expect(entries).toHaveLength(6);
-  });
-
-  it('all Rust type values are non-empty strings', () => {
-    for (const rustType of Object.values(YL_TO_RUST_TYPE)) {
-      expect(typeof rustType).toBe('string');
-      expect(rustType.length).toBeGreaterThan(0);
-    }
-  });
-});
 
 describe('isPrimitive()', () => {
   it('returns true for structured primitive int', () => {
@@ -84,32 +38,12 @@ describe('isPrimitive()', () => {
     expect(isPrimitive({ kind: 'option', innerType: INT })).toBe(false);
   });
 
-  it('returns true for legacy string "int"', () => {
-    expect(isPrimitive('int')).toBe(true);
-  });
-
-  it('returns true for legacy string "float"', () => {
-    expect(isPrimitive('float')).toBe(true);
-  });
-
-  it('returns false for legacy string "unknown"', () => {
-    expect(isPrimitive('unknown')).toBe(false);
-  });
-
   it('matches specific name when name filter provided', () => {
     expect(isPrimitive(INT, 'int')).toBe(true);
   });
 
   it('rejects non-matching name filter', () => {
     expect(isPrimitive(INT, 'float')).toBe(false);
-  });
-
-  it('matches legacy string with name filter', () => {
-    expect(isPrimitive('string', 'string')).toBe(true);
-  });
-
-  it('rejects legacy string with wrong name filter', () => {
-    expect(isPrimitive('string', 'int')).toBe(false);
   });
 });
 
@@ -118,20 +52,12 @@ describe('isUnknown()', () => {
     expect(isUnknown({ kind: 'unknown' })).toBe(true);
   });
 
-  it('returns true for legacy string "unknown"', () => {
-    expect(isUnknown('unknown')).toBe(true);
-  });
-
   it('returns false for INT', () => {
     expect(isUnknown(INT)).toBe(false);
   });
 
   it('returns false for FLOAT', () => {
     expect(isUnknown(FLOAT)).toBe(false);
-  });
-
-  it('returns false for legacy string "int"', () => {
-    expect(isUnknown('int')).toBe(false);
   });
 
   it('returns false for array kind', () => {
@@ -156,17 +82,7 @@ describe('isNumeric()', () => {
     expect(isNumeric(BOOL)).toBe(false);
   });
 
-  it('returns true for legacy "int"', () => {
-    expect(isNumeric('int')).toBe(true);
-  });
 
-  it('returns true for legacy "float"', () => {
-    expect(isNumeric('float')).toBe(true);
-  });
-
-  it('returns false for legacy "string"', () => {
-    expect(isNumeric('string')).toBe(false);
-  });
 });
 
 describe('typesEqual()', () => {
@@ -260,19 +176,6 @@ describe('typesEqual()', () => {
     expect(typesEqual(a, b)).toBe(false);
   });
 
-  it('legacy string and structured type are equal when same primitive', () => {
-    expect(typesEqual('int', INT)).toBe(true);
-    expect(typesEqual(INT, 'int')).toBe(true);
-  });
-
-  it('legacy string and structured type are not equal for different primitives', () => {
-    expect(typesEqual('int', FLOAT)).toBe(false);
-  });
-
-  it('legacy unknown strings are equal', () => {
-    expect(typesEqual('unknown', 'unknown')).toBe(true);
-  });
-
   it('tuple types with same elements are equal', () => {
     const a: YlType = { kind: 'tuple', elements: [INT, STRING] };
     const b: YlType = { kind: 'tuple', elements: [INT, STRING] };
@@ -347,13 +250,6 @@ describe('toRustType()', () => {
     expect(toRustType({ kind: 'function', params: [INT], returnType: STRING })).toBe('fn(i32) -> String');
   });
 
-  it('converts legacy "int" to i32', () => {
-    expect(toRustType('int')).toBe('i32');
-  });
-
-  it('converts legacy "unknown" to /* unknown */', () => {
-    expect(toRustType('unknown')).toBe('/* unknown */');
-  });
 });
 
 describe('typeToString()', () => {
@@ -417,12 +313,5 @@ describe('typeToString()', () => {
     expect(typeToString({ kind: 'tuple', elements: [INT, STRING] })).toBe('(int, string)');
   });
 
-  it('converts legacy "int" to "int"', () => {
-    expect(typeToString('int')).toBe('int');
-  });
-
-  it('converts legacy "unknown" to "unknown"', () => {
-    expect(typeToString('unknown')).toBe('unknown');
-  });
 });
 

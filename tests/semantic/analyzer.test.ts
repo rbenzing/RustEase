@@ -626,7 +626,7 @@ end`;
       expect(result.errors).toHaveLength(0);
       const shapeType = result.enumTypes.get('Shape');
       expect(shapeType).toBeDefined();
-      if (shapeType && typeof shapeType !== 'string' && shapeType.kind === 'enum') {
+      if (shapeType && shapeType.kind === 'enum') {
         const circle = shapeType.variants.find(v => v.name === 'Circle');
         expect(circle).toBeDefined();
         expect(circle!.data).toHaveLength(1);
