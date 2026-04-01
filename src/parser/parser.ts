@@ -43,6 +43,8 @@ import type {
   SelfExpression,
   NoneLiteral,
   MapLiteral,
+  IfExpression,
+  TupleLiteral,
 } from '../ast/nodes.js';
 
 export function parse(tokens: Token[]): { program: Program; errors: CompilerError[] } {
@@ -186,11 +188,27 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     advance(); // consume 'enum'
     const nameTok = expect(TokenType.Identifier, "Expected enum name after 'enum'");
     skipNewlines();
-    const variants: { name: string }[] = [];
+    const variants: { name: string; data?: string[] }[] = [];
     while (!isAtEnd() && !check(TokenType.End)) {
       if (check(TokenType.Newline)) { skipNewlines(); continue; }
       const variantTok = expect(TokenType.Identifier, 'Expected variant name in enum');
-      variants.push({ name: variantTok.value });
+      // Check for data-carrying variant: VariantName(type1, type2, ...)
+      if (check(TokenType.LeftParen)) {
+        advance(); // consume '('
+        const data: string[] = [];
+        if (!check(TokenType.RightParen)) {
+          do {
+            skipNewlines();
+            const typeTok = expect(TokenType.Identifier, 'Expected type name in enum variant data');
+            data.push(typeTok.value);
+            skipNewlines();
+          } while (match(TokenType.Comma));
+        }
+        expect(TokenType.RightParen, "Expected ')' after enum variant data types");
+        variants.push({ name: variantTok.value, data });
+      } else {
+        variants.push({ name: variantTok.value });
+      }
       skipNewlines();
     }
     expect(TokenType.End, "Expected 'end' to close enum declaration");
@@ -260,7 +278,12 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
         const typeTok = expect(TokenType.Identifier, "Expected type annotation after ':'");
         typeAnnotation = typeTok.value;
       }
-      params.push({ name: tok.value, typeAnnotation, location: tok.location });
+      let defaultValue: import('../ast/nodes.js').Expression | undefined;
+      if (check(TokenType.Equals)) {
+        advance(); // consume '='
+        defaultValue = parseExpression();
+      }
+      params.push({ name: tok.value, typeAnnotation, defaultValue, location: tok.location });
     } while (match(TokenType.Comma));
 
     return params;
@@ -317,6 +340,11 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       const identExpr = { kind: 'Identifier' as const, name: identTok.value, location };
       const binaryExpr = { kind: 'BinaryExpression' as const, left: identExpr, operator: op, right: rhs, location } satisfies BinaryExpression;
       return { kind: 'VariableAssignment', identifier: identTok.value, expression: binaryExpr, location };
+    }
+
+    // Annotated assignment: identifier: type = expr
+    if (check(TokenType.Identifier) && peekNext().type === TokenType.Colon) {
+      return parseAnnotatedAssignment();
     }
 
     // Simple assignment: identifier = expr
@@ -426,13 +454,29 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
   function parseForStatement(): ForStatement {
     const location = currentLocation();
     advance(); // consume 'for'
-    const varTok = expect(TokenType.Identifier, "Expected variable name after 'for'");
+
+    let variable: string;
+    let destructure: { key: string; value: string } | undefined;
+
+    if (check(TokenType.LeftParen)) {
+      advance(); // consume '('
+      const keyTok = expect(TokenType.Identifier, "Expected key variable name in destructuring pattern");
+      expect(TokenType.Comma, "Expected ',' between key and value in destructuring pattern");
+      const valTok = expect(TokenType.Identifier, "Expected value variable name in destructuring pattern");
+      expect(TokenType.RightParen, "Expected ')' to close destructuring pattern");
+      variable = keyTok.value;
+      destructure = { key: keyTok.value, value: valTok.value };
+    } else {
+      const varTok = expect(TokenType.Identifier, "Expected variable name after 'for'");
+      variable = varTok.value;
+    }
+
     expect(TokenType.In, "Expected 'in' after variable name in for loop");
     const iterable = parseExpression();
     skipNewlines();
     const body = parseBody();
     expect(TokenType.End, "Expected 'end' to close for loop");
-    return { kind: 'ForStatement', variable: varTok.value, iterable, body, location };
+    return { kind: 'ForStatement', variable, destructure, iterable, body, location };
   }
 
   function parseReturnStatement(): ReturnStatement {
@@ -464,6 +508,31 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     advance(); // consume '='
     const expression = parseExpression();
     return { kind: 'VariableAssignment', identifier: identTok.value, expression, location };
+  }
+
+  /** Collect tokens between ':' and '=' into a type annotation string (e.g. "array<int>"). */
+  function parseTypeAnnotationString(): string {
+    let depth = 0;
+    const parts: string[] = [];
+    while (!isAtEnd()) {
+      const t = peek();
+      if (t.type === TokenType.Equals && depth === 0) break;
+      if (t.type === TokenType.LessThan) depth++;
+      else if (t.type === TokenType.GreaterThan) depth--;
+      parts.push(advance().value);
+    }
+    return parts.join('');
+  }
+
+  /** Parse an annotated assignment: identifier: type = expr */
+  function parseAnnotatedAssignment(): VariableAssignment {
+    const location = currentLocation();
+    const identTok = advance(); // consume identifier
+    advance(); // consume ':'
+    const typeAnnotation = parseTypeAnnotationString();
+    advance(); // consume '='
+    const expression = parseExpression();
+    return { kind: 'VariableAssignment', identifier: identTok.value, typeAnnotation, expression, location };
   }
 
   function parseExpressionStatement(): ExpressionStatement {
@@ -694,6 +763,20 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       ) {
         advance(); // consume '.'
         const variantTok = advance(); // consume variant name
+        // Check for data-carrying constructor: Shape.Circle(arg1, arg2, ...)
+        if (check(TokenType.LeftParen)) {
+          advance(); // consume '('
+          const varArgs: Expression[] = [];
+          if (!check(TokenType.RightParen)) {
+            do {
+              skipNewlines();
+              varArgs.push(parseExpression());
+              skipNewlines();
+            } while (match(TokenType.Comma));
+          }
+          expect(TokenType.RightParen, "Expected ')' after variant arguments");
+          return { kind: 'EnumVariantAccess', enumName: token.value, variant: variantTok.value, arguments: varArgs, location: loc } satisfies EnumVariantAccess;
+        }
         return { kind: 'EnumVariantAccess', enumName: token.value, variant: variantTok.value, location: loc } satisfies EnumVariantAccess;
       }
       return { kind: 'Identifier', name: token.value, location: loc } satisfies IdentifierExpr;
@@ -701,9 +784,24 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
 
     if (token.type === TokenType.LeftParen) {
       advance(); // consume '('
-      const expr = parseExpression();
+      const firstExpr = parseExpression();
+      if (match(TokenType.Comma)) {
+        // Tuple literal: (e1, e2, ...)
+        const elements: Expression[] = [firstExpr];
+        skipNewlines();
+        while (!check(TokenType.RightParen) && !isAtEnd()) {
+          skipNewlines();
+          if (check(TokenType.RightParen)) break;
+          elements.push(parseExpression());
+          skipNewlines();
+          if (!match(TokenType.Comma)) break;
+          skipNewlines();
+        }
+        expect(TokenType.RightParen, "Expected ')' after tuple elements");
+        return { kind: 'TupleLiteral', elements, location: loc } satisfies TupleLiteral;
+      }
       expect(TokenType.RightParen, "Expected ')' after grouped expression");
-      return { kind: 'GroupedExpression', expression: expr, location: loc } satisfies GroupedExpression;
+      return { kind: 'GroupedExpression', expression: firstExpr, location: loc } satisfies GroupedExpression;
     }
 
     if (token.type === TokenType.LeftBracket) {
@@ -739,6 +837,16 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       }
       expect(TokenType.RightBrace, "Expected '}' to close map literal");
       return { kind: 'MapLiteral', entries, location: loc } satisfies MapLiteral;
+    }
+
+    if (token.type === TokenType.If) {
+      advance(); // consume 'if'
+      const condition = parseExpression();
+      expect(TokenType.Then, "Expected 'then' after condition in if expression");
+      const thenBranch = parseExpression();
+      expect(TokenType.Else, "Expected 'else' after then-branch in if expression");
+      const elseBranch = parseExpression();
+      return { kind: 'IfExpression', condition, thenBranch, elseBranch, location: loc } satisfies IfExpression;
     }
 
     if (token.type === TokenType.Pipe) {
@@ -836,12 +944,38 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       return true;
     }
 
-    // Enum pattern: Identifier.Identifier =>
+    // Enum pattern (qualified): Identifier.Identifier => or Identifier.Identifier(bindings) =>
     if (t0.type === TokenType.Identifier && t1.type === TokenType.Dot) {
       const t2 = peekAt(2);
-      const t3 = peekAt(3);
-      if (t2.type === TokenType.Identifier && t3.type === TokenType.Arrow) {
-        return true;
+      if (t2.type === TokenType.Identifier) {
+        const t3 = peekAt(3);
+        if (t3.type === TokenType.Arrow) return true; // Shape.Variant =>
+        // Shape.Variant(bindings) => — scan forward for closing ')' then '=>'
+        if (t3.type === TokenType.LeftParen) {
+          for (let off = 4; off <= 20; off++) {
+            const tok = peekAt(off);
+            if (tok.type === TokenType.RightParen) {
+              return peekAt(off + 1).type === TokenType.Arrow;
+            }
+            if (tok.type === TokenType.EOF) break;
+          }
+        }
+      }
+    }
+
+    // Data-carrying enum pattern (unqualified): UppercaseIdent(bindings) =>
+    if (
+      t0.type === TokenType.Identifier &&
+      t0.value.length > 0 && t0.value[0]! >= 'A' && t0.value[0]! <= 'Z' &&
+      t1.type === TokenType.LeftParen
+    ) {
+      // Scan forward for closing ')' then '=>'
+      for (let off = 2; off <= 20; off++) {
+        const tok = peekAt(off);
+        if (tok.type === TokenType.RightParen) {
+          return peekAt(off + 1).type === TokenType.Arrow;
+        }
+        if (tok.type === TokenType.EOF) break;
       }
     }
 
@@ -857,7 +991,7 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       return { kind: 'WildcardPattern' };
     }
 
-    // Enum pattern: UppercaseIdent.Variant (ident followed by dot then ident then =>)
+    // Enum pattern (qualified): UppercaseIdent.Variant or UppercaseIdent.Variant(bindings)
     if (
       token.type === TokenType.Identifier &&
       peekNext().type === TokenType.Dot
@@ -865,7 +999,44 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       const enumName = advance().value; // consume enum name
       advance(); // consume '.'
       const variantTok = expect(TokenType.Identifier, "Expected variant name after '.' in match pattern");
+      // Check for data-carrying destructuring: Shape.Circle(r) or Shape.Rectangle(w, h)
+      if (check(TokenType.LeftParen)) {
+        advance(); // consume '('
+        const bindings: string[] = [];
+        if (!check(TokenType.RightParen)) {
+          do {
+            skipNewlines();
+            const bindTok = expect(TokenType.Identifier, 'Expected binding name in enum pattern');
+            bindings.push(bindTok.value);
+            skipNewlines();
+          } while (match(TokenType.Comma));
+        }
+        expect(TokenType.RightParen, "Expected ')' after enum pattern bindings");
+        return { kind: 'EnumPattern', enumName, variant: variantTok.value, bindings };
+      }
       return { kind: 'EnumPattern', enumName, variant: variantTok.value };
+    }
+
+    // Unqualified data-carrying enum pattern: UppercaseIdent(bindings) =>
+    // (e.g. Circle(r) or Rectangle(w, h) — enum name inferred from match expression)
+    if (
+      token.type === TokenType.Identifier &&
+      token.value.length > 0 && token.value[0]! >= 'A' && token.value[0]! <= 'Z' &&
+      peekNext().type === TokenType.LeftParen
+    ) {
+      const variant = advance().value; // consume variant name
+      advance(); // consume '('
+      const bindings: string[] = [];
+      if (!check(TokenType.RightParen)) {
+        do {
+          skipNewlines();
+          const bindTok = expect(TokenType.Identifier, 'Expected binding name in enum pattern');
+          bindings.push(bindTok.value);
+          skipNewlines();
+        } while (match(TokenType.Comma));
+      }
+      expect(TokenType.RightParen, "Expected ')' after enum pattern bindings");
+      return { kind: 'EnumPattern', enumName: '', variant, bindings };
     }
 
     // Identifier pattern (non-enum, non-wildcard)

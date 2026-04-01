@@ -94,6 +94,38 @@ describe('compile() pipeline — end-to-end integration', () => {
     // Warnings may or may not prevent success, but they exist
     expect(Array.isArray(result.warnings)).toBe(true);
   });
+
+  it('populates sourceLines on a successful compilation', () => {
+    const source = [
+      'function main()',
+      '    x = 42',
+      '    print(x)',
+      'end',
+    ].join('\n');
+
+    const result = compile(source, 'test.re');
+
+    expect(result.sourceLines).toBeDefined();
+    expect(result.sourceLines).toHaveLength(4);
+    expect(result.sourceLines![0]).toBe('function main()');
+    expect(result.sourceLines![1]).toBe('    x = 42');
+    expect(result.sourceLines![3]).toBe('end');
+  });
+
+  it('populates sourceLines on a failed compilation', () => {
+    const source = [
+      'function main()',
+      '    print(undeclared)',
+      'end',
+    ].join('\n');
+
+    const result = compile(source, 'test.re');
+
+    expect(result.success).toBe(false);
+    expect(result.sourceLines).toBeDefined();
+    expect(result.sourceLines).toHaveLength(3);
+    expect(result.sourceLines![1]).toBe('    print(undeclared)');
+  });
 });
 
 describe('formatErrors()', () => {
@@ -148,6 +180,71 @@ describe('formatErrors()', () => {
       ];
       expect(formatErrors(errors)).toContain(`error[${stage}]:`);
     }
+  });
+
+  it('includes source line and caret when sourceLines is provided', () => {
+    const sourceLines = [
+      'function main()',
+      '    print(undeclared)',
+      'end',
+    ];
+    const errors = [
+      {
+        stage: 'semantic' as const,
+        message: "Undefined variable 'undeclared'",
+        location: { filename: 'test.re', line: 2, column: 11 },
+      },
+    ];
+
+    const formatted = formatErrors(errors, sourceLines);
+
+    expect(formatted).toContain('    print(undeclared)');
+    expect(formatted).toContain('|');
+    expect(formatted).toContain('^');
+    // Caret should be at column 11 (10 spaces offset from the gutter '| ')
+    const lines = formatted.split('\n');
+    const caretLine = lines.find((l) => l.includes('^') && l.includes('|'));
+    expect(caretLine).toBeDefined();
+    const caretIndex = caretLine!.indexOf('^');
+    const pipeIndex = caretLine!.indexOf('|');
+    // Caret appears after the pipe + mandatory space + (column-1) spaces
+    expect(caretIndex).toBe(pipeIndex + 2 + 10); // column 11 → 10 spaces offset after '| '
+  });
+
+  it('omits source context when sourceLines is not provided', () => {
+    const errors = [
+      {
+        stage: 'lexer' as const,
+        message: "Unexpected character '@'",
+        location: { filename: 'test.re', line: 2, column: 5 },
+      },
+    ];
+
+    const formatted = formatErrors(errors);
+
+    expect(formatted).toContain('error[lexer]:');
+    expect(formatted).toContain('-->');
+    // Without sourceLines there should be no pipe/caret lines
+    expect(formatted).not.toContain('|');
+    expect(formatted).not.toContain('^');
+  });
+
+  it('includes source line from compile result in formatted errors', () => {
+    const source = [
+      'function main()',
+      '    print(undeclared)',
+      'end',
+    ].join('\n');
+
+    const result = compile(source, 'test.re');
+
+    expect(result.success).toBe(false);
+    expect(result.sourceLines).toBeDefined();
+
+    const formatted = formatErrors(result.errors, result.sourceLines);
+
+    expect(formatted).toContain('    print(undeclared)');
+    expect(formatted).toContain('^');
   });
 });
 

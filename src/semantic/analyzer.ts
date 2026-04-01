@@ -6,9 +6,10 @@ import { getFunctions } from '../ast/nodes.js';
 import type { SourceLocation } from '../errors/errors.js';
 import { createError } from '../errors/errors.js';
 import type { CompilerError } from '../errors/errors.js';
-import type { YlType, FunctionInfo, AnalysisResult } from './types.js';
+import type { YlType, FunctionInfo, AnalysisResult, EnumVariant } from './types.js';
 import { INT, FLOAT, STRING, BOOL, VOID, UNKNOWN, isPrimitive, isNumeric, isUnknown, typesEqual, typeToString } from './types.js';
 import { Scope } from './scope.js';
+import { findClosest } from './suggest.js';
 
 const BUILTIN_FUNCTIONS = new Set(['print', 'length', 'to_string', 'int', 'float', 'string', 'assert', 'panic', 'env', 'env_or', 'read_line', 'prompt', 'args', 'args_count', 'read_file', 'write_file', 'append_file', 'file_exists', 'some', 'ok', 'err']);
 
@@ -23,6 +24,8 @@ export function analyze(program: Program): AnalysisResult {
     structDeclarations: new Map(),
     implMethods: new Map(),
     mutatingMethods: new Set(),
+    usedVariables: new Set(),
+    variableLocations: new Map(),
     errors: [],
     warnings: [],
   };
@@ -56,7 +59,10 @@ export function analyze(program: Program): AnalysisResult {
       const ylType: YlType = {
         kind: 'enum',
         name: enumDecl.name,
-        variants: enumDecl.variants.map(v => ({ name: v.name })),
+        variants: enumDecl.variants.map(v => ({
+          name: v.name,
+          data: v.data?.map(t => annotationToYlType(t)),
+        })),
       };
       result.enumTypes.set(enumDecl.name, ylType);
     }
@@ -131,22 +137,52 @@ export function analyze(program: Program): AnalysisResult {
   // Resolve parameter types from call sites
   for (const fn of getFunctions(program)) {
     if (!userFunctions.has(fn.name)) continue;
+
+    // Validate default parameter ordering: non-default params cannot follow default params
+    let seenDefault = false;
+    for (const param of fn.parameters) {
+      if (param.defaultValue !== undefined) {
+        seenDefault = true;
+      } else if (seenDefault) {
+        result.errors.push(createError('semantic',
+          `Non-default parameter '${param.name}' cannot follow a default parameter`,
+          param.location));
+      }
+    }
+
     const paramTypes: YlType[] = [];
+    const paramDefaults: (import('../ast/nodes.js').Expression | undefined)[] = [];
     const calls = callSiteArgs.get(fn.name);
     for (let i = 0; i < fn.parameters.length; i++) {
+      const param = fn.parameters[i];
+      paramDefaults.push(param.defaultValue);
+
       let resolved: YlType = UNKNOWN;
-      if (calls) {
+      // Priority 1: explicit type annotation on the parameter
+      if (param.typeAnnotation) {
+        const annotType = annotationToYlType(param.typeAnnotation);
+        if (!isUnknown(annotType)) resolved = annotType;
+      }
+      // Priority 2: type inferred from call sites
+      if (isUnknown(resolved) && calls) {
         for (const args of calls) {
-          if (i < args.length && !isUnknown(args[i])) {
-            resolved = args[i];
+          if (i < args.length && !isUnknown(args[i]!)) {
+            resolved = args[i]!;
             break;
           }
         }
       }
+      // Priority 3: type inferred from default value expression
+      if (isUnknown(resolved) && param.defaultValue !== undefined) {
+        const tempScope = new Scope();
+        for (const [name, type] of result.globalConstants) tempScope.define(name, type);
+        const defaultType = inferExprType(fn, param.defaultValue, tempScope, result, userFunctions, false);
+        if (!isUnknown(defaultType)) resolved = defaultType;
+      }
       paramTypes.push(isUnknown(resolved) ? INT : resolved);
     }
     // Store function info (return type computed in pass 2)
-    result.functionTypes.set(fn.name, { name: fn.name, parameterTypes: paramTypes, returnType: VOID });
+    result.functionTypes.set(fn.name, { name: fn.name, parameterTypes: paramTypes, returnType: VOID, paramDefaults });
   }
 
   // Pass 2: Full validation with resolved parameter types
@@ -208,17 +244,104 @@ export function analyze(program: Program): AnalysisResult {
     }
   }
 
+  // --- Unused variable detection (S-04) ---
+  // Collect all function parameter keys so we can skip them (params serve as documentation)
+  const parameterKeys = new Set<string>();
+  for (const fn of getFunctions(program)) {
+    if (!userFunctions.has(fn.name)) continue;
+    for (const param of fn.parameters) {
+      parameterKeys.add(`${fn.name}:${param.name}`);
+    }
+  }
+  for (const decl of program.declarations) {
+    if (decl.kind === 'ImplDeclaration') {
+      const implDecl = decl as ImplDeclaration;
+      for (const method of implDecl.methods) {
+        const methodKey = `${implDecl.structName}.${method.name}`;
+        for (const param of method.parameters) {
+          parameterKeys.add(`${methodKey}:${param.name}`);
+        }
+      }
+    }
+  }
+
+  // Emit a warning for each declared variable that was never read
+  for (const [key] of result.variableTypes) {
+    if (parameterKeys.has(key)) continue;
+    const colonIdx = key.indexOf(':');
+    if (colonIdx === -1) continue;
+    const varName = key.slice(colonIdx + 1);
+    // Skip underscore-prefixed variables (Rust convention for intentionally unused)
+    if (varName.startsWith('_')) continue;
+    if (!result.usedVariables.has(key)) {
+      const location = result.variableLocations.get(key);
+      if (location) {
+        result.warnings.push(createError('semantic', `Variable '${varName}' is declared but never used`, location));
+      }
+    }
+  }
+
   return result;
 }
 
-/** Convert a type annotation string to a YlType. */
+/** Convert a type annotation string to a YlType. Supports compound types like array<int>, map<K,V>. */
 function annotationToYlType(annotation: string): YlType {
-  switch (annotation) {
-    case 'int': return INT;
-    case 'float': return FLOAT;
-    case 'string': return STRING;
-    case 'bool': return BOOL;
+  return parseTypeString(annotation.trim());
+}
+
+/** Recursively parse a type string into a YlType. */
+function parseTypeString(s: string): YlType {
+  const ltIdx = s.indexOf('<');
+  if (ltIdx === -1) {
+    switch (s) {
+      case 'int': return INT;
+      case 'float': return FLOAT;
+      case 'string': return STRING;
+      case 'bool': return BOOL;
+      default: return UNKNOWN;
+    }
+  }
+  const typeName = s.slice(0, ltIdx).trim();
+  const inner = s.slice(ltIdx + 1, s.lastIndexOf('>')).trim();
+  switch (typeName) {
+    case 'array': return { kind: 'array', elementType: parseTypeString(inner) };
+    case 'option': return { kind: 'option', innerType: parseTypeString(inner) };
+    case 'map': {
+      const [keyStr, valueStr] = splitAtTopLevelComma(inner);
+      return { kind: 'map', keyType: parseTypeString(keyStr.trim()), valueType: parseTypeString(valueStr.trim()) };
+    }
+    case 'result': {
+      const [okStr, errStr] = splitAtTopLevelComma(inner);
+      return { kind: 'result', okType: parseTypeString(okStr.trim()), errType: parseTypeString(errStr.trim()) };
+    }
     default: return UNKNOWN;
+  }
+}
+
+/** Split a string at the first top-level comma (not nested in < >). */
+function splitAtTopLevelComma(s: string): [string, string] {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '<') depth++;
+    else if (s[i] === '>') depth--;
+    else if (s[i] === ',' && depth === 0) {
+      return [s.slice(0, i), s.slice(i + 1)];
+    }
+  }
+  return [s, ''];
+}
+
+/** Returns true when a YlType contains 'unknown' at any depth. */
+function typeContainsUnknown(type: YlType): boolean {
+  if (typeof type === 'string') return type === 'unknown';
+  switch (type.kind) {
+    case 'unknown': return true;
+    case 'primitive': return false;
+    case 'array': return typeContainsUnknown(type.elementType);
+    case 'map': return typeContainsUnknown(type.keyType) || typeContainsUnknown(type.valueType);
+    case 'option': return typeContainsUnknown(type.innerType);
+    case 'result': return typeContainsUnknown(type.okType) || typeContainsUnknown(type.errType);
+    default: return false;
   }
 }
 
@@ -227,6 +350,10 @@ function inferConstType(expr: Expression): YlType {
   if (expr.kind === 'Literal') {
     const litMap: Record<string, YlType> = { int: INT, float: FLOAT, string: STRING, bool: BOOL };
     return litMap[expr.literalType] ?? UNKNOWN;
+  }
+  if (expr.kind === 'UnaryExpression' && expr.operator === '-' && expr.operand.kind === 'Literal') {
+    const litMap: Record<string, YlType> = { int: INT, float: FLOAT };
+    return litMap[expr.operand.literalType] ?? UNKNOWN;
   }
   return UNKNOWN;
 }
@@ -274,10 +401,28 @@ function collectTypes(
         const exprType = inferExprType(fn, stmt.expression, scope, result, userFunctions, false);
         // Propagate call-site argument types for function calls in the RHS
         collectCallSites(fn, stmt.expression, scope, result, callSiteArgs, userFunctions);
-        if (!scope.isDefined(stmt.identifier)) {
-          scope.define(stmt.identifier, exprType);
+        // Determine effective type: annotation takes priority over inferred type
+        let effectiveType = exprType;
+        if (stmt.typeAnnotation) {
+          const annotationType = annotationToYlType(stmt.typeAnnotation);
+          if (!isUnknown(annotationType)) {
+            // Emit conflict error only when the inferred type is fully resolved and mismatches
+            if (!typeContainsUnknown(exprType) && !typesEqual(exprType, annotationType)) {
+              result.errors.push(createError('semantic',
+                `Type annotation '${stmt.typeAnnotation}' conflicts with inferred type '${typeToString(exprType)}'`,
+                stmt.location));
+            }
+            effectiveType = annotationType;
+          }
         }
-        result.variableTypes.set(key, exprType);
+        if (!scope.isDefined(stmt.identifier)) {
+          scope.define(stmt.identifier, effectiveType);
+        }
+        result.variableTypes.set(key, effectiveType);
+        // Track declaration location (only first declaration)
+        if (!result.variableLocations.has(key)) {
+          result.variableLocations.set(key, stmt.location);
+        }
         break;
       }
       case 'IndexAssignment':
@@ -299,27 +444,80 @@ function collectTypes(
         collectTypes(fn, stmt.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
         break;
       case 'ForStatement': {
-        // Determine loop variable type from iterable
-        let loopVarType: YlType = INT;
-        if (stmt.iterable.kind !== 'RangeExpression') {
+        if (stmt.destructure) {
+          // Map destructuring: for (k, v) in map_expr
           const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, false);
-          if (typeof iterType !== 'string' && iterType.kind === 'array') {
-            loopVarType = iterType.elementType;
+          let keyType: YlType = UNKNOWN;
+          let valueType: YlType = UNKNOWN;
+          if (typeof iterType !== 'string' && iterType.kind === 'map') {
+            keyType = iterType.keyType;
+            valueType = iterType.valueType;
           }
-        }
-        const key = `${fn.name}:${stmt.variable}`;
-        result.variableTypes.set(key, loopVarType);
-        if (!scope.isDefined(stmt.variable)) {
-          scope.define(stmt.variable, loopVarType);
+          const keyKey = `${fn.name}:${stmt.destructure.key}`;
+          const valKey = `${fn.name}:${stmt.destructure.value}`;
+          result.variableTypes.set(keyKey, keyType);
+          result.variableTypes.set(valKey, valueType);
+          if (!result.variableLocations.has(keyKey)) {
+            result.variableLocations.set(keyKey, stmt.location);
+          }
+          if (!result.variableLocations.has(valKey)) {
+            result.variableLocations.set(valKey, stmt.location);
+          }
+          if (!scope.isDefined(stmt.destructure.key)) {
+            scope.define(stmt.destructure.key, keyType);
+          }
+          if (!scope.isDefined(stmt.destructure.value)) {
+            scope.define(stmt.destructure.value, valueType);
+          }
+        } else {
+          // Determine loop variable type from iterable
+          let loopVarType: YlType = INT;
+          if (stmt.iterable.kind !== 'RangeExpression') {
+            const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, false);
+            if (typeof iterType !== 'string' && iterType.kind === 'array') {
+              loopVarType = iterType.elementType;
+            }
+          }
+          const key = `${fn.name}:${stmt.variable}`;
+          result.variableTypes.set(key, loopVarType);
+          // Track for-loop variable declaration location (only first)
+          if (!result.variableLocations.has(key)) {
+            result.variableLocations.set(key, stmt.location);
+          }
+          if (!scope.isDefined(stmt.variable)) {
+            scope.define(stmt.variable, loopVarType);
+          }
         }
         collectTypes(fn, stmt.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
         break;
       }
-      case 'MatchStatement':
+      case 'MatchStatement': {
+        const matchExprTypeCollect = inferExprType(fn, stmt.expression, scope, result, userFunctions, false);
         for (const arm of stmt.arms) {
+          // Pre-register pattern bindings so arm body can reference them during type collection
+          if (arm.pattern.kind === 'EnumPattern' && arm.pattern.bindings && arm.pattern.bindings.length > 0) {
+            const enumPat = arm.pattern;
+            const resolvedName = enumPat.enumName ||
+              (typeof matchExprTypeCollect !== 'string' && matchExprTypeCollect.kind === 'enum' ? matchExprTypeCollect.name : '');
+            const enumTypeVal = resolvedName ? result.enumTypes.get(resolvedName) : undefined;
+            if (enumTypeVal && typeof enumTypeVal !== 'string' && enumTypeVal.kind === 'enum') {
+              const variantDef = enumTypeVal.variants.find(v => v.name === enumPat.variant);
+              if (variantDef && variantDef.data) {
+                for (let i = 0; i < Math.min(enumPat.bindings.length, variantDef.data.length); i++) {
+                  const bindType = variantDef.data[i] ?? UNKNOWN;
+                  const bindName = enumPat.bindings[i]!;
+                  if (!scope.isDefined(bindName)) {
+                    scope.define(bindName, bindType);
+                  }
+                  result.variableTypes.set(`${fn.name}:${bindName}`, bindType);
+                }
+              }
+            }
+          }
           collectTypes(fn, arm.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
         }
         break;
+      }
       case 'ExpressionStatement':
         collectCallSites(fn, stmt.expression, scope, result, callSiteArgs, userFunctions);
         // Mark mutability for push/pop and map-mutating method calls
@@ -387,6 +585,18 @@ function collectCallSites(
   } else if (expr.kind === 'IndexExpression') {
     collectCallSites(fn, expr.object, scope, result, callSiteArgs, userFunctions);
     collectCallSites(fn, expr.index, scope, result, callSiteArgs, userFunctions);
+  } else if (expr.kind === 'IfExpression') {
+    collectCallSites(fn, expr.condition, scope, result, callSiteArgs, userFunctions);
+    collectCallSites(fn, expr.thenBranch, scope, result, callSiteArgs, userFunctions);
+    collectCallSites(fn, expr.elseBranch, scope, result, callSiteArgs, userFunctions);
+  } else if (expr.kind === 'TupleLiteral') {
+    for (const elem of expr.elements) {
+      collectCallSites(fn, elem, scope, result, callSiteArgs, userFunctions);
+    }
+  } else if (expr.kind === 'EnumVariantAccess' && expr.arguments) {
+    for (const arg of expr.arguments) {
+      collectCallSites(fn, arg, scope, result, callSiteArgs, userFunctions);
+    }
   }
 }
 
@@ -396,7 +606,14 @@ function validateBody(
   result: AnalysisResult, assignmentCount: Map<string, number>,
   userFunctions: Map<string, FunctionDeclaration>,
 ): void {
+  let terminalKeyword: string | null = null;
+  let warnedUnreachable = false;
   for (const stmt of stmts) {
+    // Unreachable code detection: emit one warning per block after a terminal statement
+    if (terminalKeyword !== null && !warnedUnreachable) {
+      result.warnings.push(createError('semantic', `Unreachable code after '${terminalKeyword}'`, stmt.location));
+      warnedUnreachable = true;
+    }
     switch (stmt.kind) {
       case 'VariableAssignment': {
         const key2 = `${fn.name}:${stmt.identifier}`;
@@ -409,13 +626,21 @@ function validateBody(
           result.errors.push(createError('semantic', `Cannot reassign constant '${stmt.identifier}'`, stmt.location));
         }
         const exprType = inferExprType(fn, stmt.expression, scope, result, userFunctions, true);
+        // Determine effective type using annotation (annotation wins, no re-emit of conflict errors)
+        let effectiveType2 = exprType;
+        if (stmt.typeAnnotation) {
+          const annotationType = annotationToYlType(stmt.typeAnnotation);
+          if (!isUnknown(annotationType)) {
+            effectiveType2 = annotationType;
+          }
+        }
         if (!scope.isDefined(stmt.identifier)) {
-          scope.define(stmt.identifier, exprType);
+          scope.define(stmt.identifier, effectiveType2);
         }
         // Update variableTypes in Pass 2 to capture types resolved from function return types
         const prevType = result.variableTypes.get(key2);
-        if (prevType !== undefined && isUnknown(prevType) && !isUnknown(exprType)) {
-          result.variableTypes.set(key2, exprType);
+        if (prevType !== undefined && isUnknown(prevType) && !isUnknown(effectiveType2)) {
+          result.variableTypes.set(key2, effectiveType2);
         }
         break;
       }
@@ -423,6 +648,7 @@ function validateBody(
         if (stmt.expression !== null) {
           inferExprType(fn, stmt.expression, scope, result, userFunctions, true);
         }
+        terminalKeyword = 'return';
         break;
       case 'IfStatement': {
         const condType = inferExprType(fn, stmt.condition, scope, result, userFunctions, true);
@@ -450,30 +676,53 @@ function validateBody(
         break;
       }
       case 'ForStatement': {
-        let loopVarType: YlType = INT;
-        if (stmt.iterable.kind === 'RangeExpression') {
-          const startType = inferExprType(fn, stmt.iterable.start, scope, result, userFunctions, true);
-          const endType = inferExprType(fn, stmt.iterable.end, scope, result, userFunctions, true);
-          if (!isPrimitive(startType, 'int') && !isUnknown(startType)) {
-            result.errors.push(createError('semantic', `Range start must be int, got '${typeToString(startType)}'`, stmt.iterable.location));
-          }
-          if (!isPrimitive(endType, 'int') && !isUnknown(endType)) {
-            result.errors.push(createError('semantic', `Range end must be int, got '${typeToString(endType)}'`, stmt.iterable.location));
-          }
-          loopVarType = INT;
-        } else {
+        if (stmt.destructure) {
+          // Map destructuring: for (k, v) in map_expr
           const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, true);
-          if (typeof iterType !== 'string' && iterType.kind === 'array') {
-            loopVarType = iterType.elementType;
+          let keyType: YlType = UNKNOWN;
+          let valueType: YlType = UNKNOWN;
+          if (typeof iterType !== 'string' && iterType.kind === 'map') {
+            keyType = iterType.keyType;
+            valueType = iterType.valueType;
           } else if (!isUnknown(iterType)) {
-            result.errors.push(createError('semantic', `Cannot iterate over non-iterable type '${typeToString(iterType)}'`, stmt.iterable.location));
+            result.errors.push(createError('semantic',
+              `Destructuring is only supported for map types, got '${typeToString(iterType)}'`,
+              stmt.iterable.location));
           }
+          const keyKey = `${fn.name}:${stmt.destructure.key}`;
+          const valKey = `${fn.name}:${stmt.destructure.value}`;
+          result.variableTypes.set(keyKey, keyType);
+          result.variableTypes.set(valKey, valueType);
+          const forLoopScope = scope.createLoopScope();
+          forLoopScope.define(stmt.destructure.key, keyType);
+          forLoopScope.define(stmt.destructure.value, valueType);
+          validateBody(fn, stmt.body, forLoopScope, result, assignmentCount, userFunctions);
+        } else {
+          let loopVarType: YlType = INT;
+          if (stmt.iterable.kind === 'RangeExpression') {
+            const startType = inferExprType(fn, stmt.iterable.start, scope, result, userFunctions, true);
+            const endType = inferExprType(fn, stmt.iterable.end, scope, result, userFunctions, true);
+            if (!isPrimitive(startType, 'int') && !isUnknown(startType)) {
+              result.errors.push(createError('semantic', `Range start must be int, got '${typeToString(startType)}'`, stmt.iterable.location));
+            }
+            if (!isPrimitive(endType, 'int') && !isUnknown(endType)) {
+              result.errors.push(createError('semantic', `Range end must be int, got '${typeToString(endType)}'`, stmt.iterable.location));
+            }
+            loopVarType = INT;
+          } else {
+            const iterType = inferExprType(fn, stmt.iterable, scope, result, userFunctions, true);
+            if (typeof iterType !== 'string' && iterType.kind === 'array') {
+              loopVarType = iterType.elementType;
+            } else if (!isUnknown(iterType)) {
+              result.errors.push(createError('semantic', `Cannot iterate over non-iterable type '${typeToString(iterType)}'`, stmt.iterable.location));
+            }
+          }
+          const forKey = `${fn.name}:${stmt.variable}`;
+          result.variableTypes.set(forKey, loopVarType);
+          const forLoopScope = scope.createLoopScope();
+          forLoopScope.define(stmt.variable, loopVarType);
+          validateBody(fn, stmt.body, forLoopScope, result, assignmentCount, userFunctions);
         }
-        const forKey = `${fn.name}:${stmt.variable}`;
-        result.variableTypes.set(forKey, loopVarType);
-        const forLoopScope = scope.createLoopScope();
-        forLoopScope.define(stmt.variable, loopVarType);
-        validateBody(fn, stmt.body, forLoopScope, result, assignmentCount, userFunctions);
         break;
       }
       case 'MatchStatement': {
@@ -487,28 +736,84 @@ function validateBody(
                 `Match pattern type '${typeToString(patType)}' does not match expression type '${typeToString(matchExprType)}'`,
                 arm.location));
             }
+            validateBody(fn, arm.body, scope, result, assignmentCount, userFunctions);
           } else if (arm.pattern.kind === 'EnumPattern') {
             const enumPat = arm.pattern; // capture narrowed type for use in callbacks
-            const enumType = result.enumTypes.get(enumPat.enumName);
+            // Resolve enum name: use qualified name or infer from match expression type
+            const resolvedEnumName = enumPat.enumName ||
+              (typeof matchExprType !== 'string' && matchExprType.kind === 'enum' ? matchExprType.name : '');
+            const enumType = resolvedEnumName ? result.enumTypes.get(resolvedEnumName) : undefined;
             if (!enumType) {
-              result.errors.push(createError('semantic',
-                `Undefined enum '${enumPat.enumName}' in match pattern`, arm.location));
+              if (enumPat.enumName) {
+                result.errors.push(createError('semantic',
+                  `Undefined enum '${enumPat.enumName}' in match pattern`, arm.location));
+              } else {
+                result.errors.push(createError('semantic',
+                  `Cannot resolve enum for unqualified pattern '${enumPat.variant}'`, arm.location));
+              }
+              validateBody(fn, arm.body, scope, result, assignmentCount, userFunctions);
             } else {
+              let variantDef: EnumVariant | undefined;
               if (typeof enumType !== 'string' && enumType.kind === 'enum') {
-                const variantExists = enumType.variants.some(v => v.name === enumPat.variant);
-                if (!variantExists) {
+                variantDef = enumType.variants.find(v => v.name === enumPat.variant);
+                if (!variantDef) {
                   result.errors.push(createError('semantic',
-                    `Undefined variant '${enumPat.variant}' on enum '${enumPat.enumName}'`, arm.location));
+                    `Undefined variant '${enumPat.variant}' on enum '${resolvedEnumName}'`, arm.location));
                 }
               }
               if (!isUnknown(matchExprType) && !typesEqual(matchExprType, enumType)) {
                 result.errors.push(createError('semantic',
-                  `Enum pattern '${enumPat.enumName}.${enumPat.variant}' does not match expression type '${typeToString(matchExprType)}'`,
+                  `Enum pattern '${resolvedEnumName}.${enumPat.variant}' does not match expression type '${typeToString(matchExprType)}'`,
                   arm.location));
               }
+              // Create an arm-specific scope for pattern bindings
+              const armScope = scope.createBlockScope();
+              if (enumPat.bindings && enumPat.bindings.length > 0 && variantDef) {
+                const expectedData = variantDef.data ?? [];
+                if (enumPat.bindings.length !== expectedData.length) {
+                  result.errors.push(createError('semantic',
+                    `Pattern for '${enumPat.variant}' has ${enumPat.bindings.length} binding(s), but variant has ${expectedData.length} field(s)`,
+                    arm.location));
+                }
+                for (let i = 0; i < Math.min(enumPat.bindings.length, expectedData.length); i++) {
+                  const bindType = expectedData[i] ?? UNKNOWN;
+                  const bindName = enumPat.bindings[i]!;
+                  armScope.define(bindName, bindType);
+                  // Register in variableTypes (no location → no unused-var warning for bindings)
+                  result.variableTypes.set(`${fn.name}:${bindName}`, bindType);
+                }
+              }
+              validateBody(fn, arm.body, armScope, result, assignmentCount, userFunctions);
+            }
+          } else {
+            validateBody(fn, arm.body, scope, result, assignmentCount, userFunctions);
+          }
+        }
+        // Exhaustiveness check: only for known enum types
+        if (typeof matchExprType !== 'string' && matchExprType.kind === 'enum') {
+          const allVariants = new Set(matchExprType.variants.map(v => v.name));
+          const coveredVariants = new Set<string>();
+          let hasCatchAll = false;
+          for (const arm of stmt.arms) {
+            if (arm.pattern.kind === 'WildcardPattern') {
+              hasCatchAll = true;
+              break;
+            } else if (arm.pattern.kind === 'IdentifierPattern') {
+              // Non-enum identifier pattern acts as a catch-all binding
+              hasCatchAll = true;
+              break;
+            } else if (arm.pattern.kind === 'EnumPattern') {
+              coveredVariants.add(arm.pattern.variant);
             }
           }
-          validateBody(fn, arm.body, scope, result, assignmentCount, userFunctions);
+          if (!hasCatchAll) {
+            const missing = [...allVariants].filter(v => !coveredVariants.has(v));
+            if (missing.length > 0) {
+              result.errors.push(createError('semantic',
+                `Non-exhaustive match on '${matchExprType.name}': missing variants ${missing.map(v => `'${v}'`).join(', ')}`,
+                stmt.location));
+            }
+          }
         }
         break;
       }
@@ -519,11 +824,13 @@ function validateBody(
         if (!scope.isInLoop()) {
           result.errors.push(createError('semantic', `break can only be used inside a loop`, stmt.location));
         }
+        terminalKeyword = 'break';
         break;
       case 'ContinueStatement':
         if (!scope.isInLoop()) {
           result.errors.push(createError('semantic', `continue can only be used inside a loop`, stmt.location));
         }
+        terminalKeyword = 'continue';
         break;
       case 'IndexAssignment': {
         const objectType = inferExprType(fn, stmt.object, scope, result, userFunctions, true);
@@ -601,10 +908,15 @@ function inferExprType(
     case 'Identifier': {
       if (!scope.isDefined(expr.name)) {
         if (reportErrors) {
-          result.errors.push(createError('semantic', `Undefined variable '${expr.name}'`, expr.location));
+          const candidates = [...scope.getAllNames(), ...result.globalConstants.keys()];
+          const match = findClosest(expr.name, candidates);
+          const suggestion = match !== null ? ` — did you mean '${match}'?` : '';
+          result.errors.push(createError('semantic', `Undefined variable '${expr.name}'${suggestion}`, expr.location));
         }
         return UNKNOWN;
       }
+      // Track that this variable has been read
+      result.usedVariables.add(`${fn.name}:${expr.name}`);
       return scope.lookup(expr.name) ?? UNKNOWN;
     }
     case 'GroupedExpression':
@@ -636,9 +948,35 @@ function inferExprType(
         return UNKNOWN;
       }
       if (typeof enumType !== 'string' && enumType.kind === 'enum') {
-        const variantExists = enumType.variants.some(v => v.name === expr.variant);
-        if (!variantExists && reportErrors) {
+        const variantDef = enumType.variants.find(v => v.name === expr.variant);
+        if (!variantDef && reportErrors) {
           result.errors.push(createError('semantic', `Undefined variant '${expr.variant}' on enum '${expr.enumName}'`, expr.location));
+        }
+        // Validate data-carrying constructor arguments
+        if (variantDef && expr.arguments && expr.arguments.length > 0) {
+          const expectedData = variantDef.data ?? [];
+          if (reportErrors && expr.arguments.length !== expectedData.length) {
+            result.errors.push(createError('semantic',
+              `Variant '${expr.variant}' expects ${expectedData.length} argument(s), got ${expr.arguments.length}`,
+              expr.location));
+          }
+          for (let i = 0; i < expr.arguments.length; i++) {
+            const argType = inferExprType(fn, expr.arguments[i]!, scope, result, userFunctions, reportErrors);
+            const expectedType = expectedData[i];
+            if (reportErrors && expectedType && !isUnknown(argType) && !typesEqual(argType, expectedType)) {
+              result.errors.push(createError('semantic',
+                `Argument ${i + 1} of '${expr.variant}' expects '${typeToString(expectedType)}', got '${typeToString(argType)}'`,
+                expr.arguments[i]!.location));
+            }
+          }
+        } else if (variantDef && (!expr.arguments || expr.arguments.length === 0)) {
+          // No args provided — validate that this variant doesn't require data
+          const expectedData = variantDef.data ?? [];
+          if (reportErrors && expectedData.length > 0) {
+            result.errors.push(createError('semantic',
+              `Variant '${expr.variant}' expects ${expectedData.length} argument(s), got 0`,
+              expr.location));
+          }
         }
       }
       return enumType;
@@ -686,6 +1024,27 @@ function inferExprType(
     }
     case 'IndexExpression': {
       const objectType = inferExprType(fn, expr.object, scope, result, userFunctions, reportErrors);
+      // Handle range-based slicing: arr[1..3] or arr[1..=3]
+      if (expr.index.kind === 'RangeExpression') {
+        const startType = inferExprType(fn, expr.index.start, scope, result, userFunctions, reportErrors);
+        const endType = inferExprType(fn, expr.index.end, scope, result, userFunctions, reportErrors);
+        if (typeof objectType !== 'string' && objectType.kind === 'array') {
+          if (reportErrors) {
+            if (!isPrimitive(startType, 'int') && !isUnknown(startType)) {
+              result.errors.push(createError('semantic',
+                `Range start must be int, got '${typeToString(startType)}'`,
+                expr.index.location));
+            }
+            if (!isPrimitive(endType, 'int') && !isUnknown(endType)) {
+              result.errors.push(createError('semantic',
+                `Range end must be int, got '${typeToString(endType)}'`,
+                expr.index.location));
+            }
+          }
+          return objectType; // slice returns same array type
+        }
+        return UNKNOWN;
+      }
       const indexType = inferExprType(fn, expr.index, scope, result, userFunctions, reportErrors);
       if (typeof objectType !== 'string' && objectType.kind === 'map') {
         if (reportErrors && !isUnknown(objectType.keyType) && !isUnknown(indexType) &&
@@ -1057,12 +1416,37 @@ function inferExprType(
         }
       }
       for (const field of expr.fields) {
-        inferExprType(fn, field.value, scope, result, userFunctions, reportErrors);
+        const actualType = inferExprType(fn, field.value, scope, result, userFunctions, reportErrors);
+        if (reportErrors) {
+          const expectedType = structDef.get(field.name);
+          if (expectedType !== undefined && !isUnknown(actualType) && !typesEqual(actualType, expectedType)) {
+            result.errors.push(createError('semantic',
+              `Field '${field.name}' expects '${typeToString(expectedType)}', got '${typeToString(actualType)}'`,
+              field.value.location));
+          }
+        }
       }
       return { kind: 'struct', name: expr.name, fields: structDef };
     }
+    case 'TupleLiteral': {
+      const elementTypes = expr.elements.map(e =>
+        inferExprType(fn, e, scope, result, userFunctions, reportErrors)
+      );
+      return { kind: 'tuple', elements: elementTypes };
+    }
     case 'FieldAccess': {
       const objectType = inferExprType(fn, expr.object, scope, result, userFunctions, reportErrors);
+      if (typeof objectType !== 'string' && objectType.kind === 'tuple') {
+        const idx = parseInt(expr.field, 10);
+        if (!isNaN(idx) && idx >= 0 && idx < objectType.elements.length) {
+          return objectType.elements[idx]!;
+        }
+        if (reportErrors) {
+          result.errors.push(createError('semantic',
+            `Tuple index '${expr.field}' is out of range (length ${objectType.elements.length})`, expr.location));
+        }
+        return UNKNOWN;
+      }
       if (typeof objectType !== 'string' && objectType.kind === 'struct') {
         const fieldType = objectType.fields.get(expr.field);
         if (fieldType !== undefined) return fieldType;
@@ -1103,6 +1487,20 @@ function inferExprType(
     }
     case 'NoneLiteral':
       return { kind: 'option', innerType: UNKNOWN };
+    case 'IfExpression': {
+      const condType = inferExprType(fn, expr.condition, scope, result, userFunctions, reportErrors);
+      if (reportErrors && !isPrimitive(condType, 'bool') && !isUnknown(condType)) {
+        result.errors.push(createError('semantic', `Condition must be bool, got '${typeToString(condType)}'`, expr.location));
+      }
+      const thenType = inferExprType(fn, expr.thenBranch, scope, result, userFunctions, reportErrors);
+      const elseType = inferExprType(fn, expr.elseBranch, scope, result, userFunctions, reportErrors);
+      if (reportErrors && !isUnknown(thenType) && !isUnknown(elseType) && !typesEqual(thenType, elseType)) {
+        result.errors.push(createError('semantic',
+          `Conditional expression branches have different types: '${typeToString(thenType)}' and '${typeToString(elseType)}'`,
+          expr.location));
+      }
+      return isUnknown(thenType) ? elseType : thenType;
+    }
     default:
       return UNKNOWN;
   }
@@ -1177,6 +1575,9 @@ function inferCallType(
 ): YlType {
   // Built-in functions
   if (call.name === 'print') {
+    if (reportErrors && call.arguments.length === 0) {
+      result.errors.push(createError('semantic', `'print' requires at least 1 argument`, call.location));
+    }
     for (const arg of call.arguments) {
       inferExprType(fn, arg, scope, result, userFunctions, reportErrors);
     }
@@ -1412,8 +1813,27 @@ function inferCallType(
   // User-defined functions
   const fnInfo = result.functionTypes.get(call.name);
   if (!fnInfo && reportErrors) {
-    result.errors.push(createError('semantic', `Undefined function '${call.name}'`, call.location));
+    const fnCandidates = [...userFunctions.keys(), ...BUILTIN_FUNCTIONS];
+    const match = findClosest(call.name, fnCandidates);
+    const suggestion = match !== null ? ` — did you mean '${match}'?` : '';
+    result.errors.push(createError('semantic', `Undefined function '${call.name}'${suggestion}`, call.location));
     return UNKNOWN;
+  }
+  // Validate argument count considering default parameters
+  if (reportErrors && fnInfo) {
+    const totalParams = fnInfo.parameterTypes.length;
+    const requiredCount = fnInfo.paramDefaults
+      ? fnInfo.paramDefaults.filter(d => d === undefined).length
+      : totalParams;
+    if (call.arguments.length < requiredCount) {
+      result.errors.push(createError('semantic',
+        `Function '${call.name}' requires at least ${requiredCount} argument(s), got ${call.arguments.length}`,
+        call.location));
+    } else if (call.arguments.length > totalParams) {
+      result.errors.push(createError('semantic',
+        `Function '${call.name}' takes at most ${totalParams} argument(s), got ${call.arguments.length}`,
+        call.location));
+    }
   }
   // Validate argument types
   for (const arg of call.arguments) {

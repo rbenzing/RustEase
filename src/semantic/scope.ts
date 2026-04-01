@@ -40,5 +40,16 @@ export class Scope {
   isInLoop(): boolean {
     return this.inLoop;
   }
+
+  /** Returns all variable names defined in this scope and all parent scopes. */
+  getAllNames(): string[] {
+    const names = new Set<string>(this.variables.keys());
+    if (this.parent) {
+      for (const name of this.parent.getAllNames()) {
+        names.add(name);
+      }
+    }
+    return Array.from(names);
+  }
 }
 

@@ -4,6 +4,12 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts', 'tests/**/*.spec.ts'],
     passWithNoTests: true,
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        execArgv: ['--max-old-space-size=8192'],
+      },
+    },
   },
 });
 

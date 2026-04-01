@@ -68,6 +68,7 @@ export interface FunctionDeclaration extends BaseNode {
 export interface Parameter {
   name: string;
   typeAnnotation?: string;
+  defaultValue?: Expression;
   location: SourceLocation;
 }
 
@@ -88,6 +89,7 @@ export type Statement =
 export interface VariableAssignment extends BaseNode {
   kind: 'VariableAssignment';
   identifier: string;
+  typeAnnotation?: string;
   expression: Expression;
   isConst?: boolean;
 }
@@ -147,6 +149,7 @@ export interface ContinueStatement extends BaseNode {
 export interface ForStatement extends BaseNode {
   kind: 'ForStatement';
   variable: string;
+  destructure?: { key: string; value: string };
   iterable: Expression;
   body: Statement[];
 }
@@ -167,7 +170,7 @@ export type MatchPattern =
   | { kind: 'LiteralPattern'; value: Expression }
   | { kind: 'IdentifierPattern'; name: string }
   | { kind: 'WildcardPattern' }
-  | { kind: 'EnumPattern'; enumName: string; variant: string };
+  | { kind: 'EnumPattern'; enumName: string; variant: string; bindings?: string[] };
 
 // --- Expressions ---
 export type Expression =
@@ -188,7 +191,8 @@ export type Expression =
   | EnumVariantAccess
   | ClosureExpression
   | SelfExpression
-  | NoneLiteral;
+  | NoneLiteral
+  | IfExpression;
 
 export type BinaryOperator =
   | '+' | '-' | '*' | '/' | '%'
@@ -296,4 +300,11 @@ export interface SelfExpression extends BaseNode {
 
 export interface NoneLiteral extends BaseNode {
   kind: 'NoneLiteral';
+}
+
+export interface IfExpression extends BaseNode {
+  kind: 'IfExpression';
+  condition: Expression;
+  thenBranch: Expression;
+  elseBranch: Expression;
 }

@@ -84,6 +84,11 @@ function getExprType(expr: Expression, analysis: AnalysisResult, fnName: string)
     }
     case 'IndexExpression': {
       const objType = getExprType(expr.object, analysis, fnName);
+      // Range slice returns the same array type
+      if (expr.index.kind === 'RangeExpression') {
+        if (typeof objType !== 'string' && objType.kind === 'array') return objType;
+        return UNKNOWN;
+      }
       if (typeof objType !== 'string' && objType.kind === 'array') return objType.elementType;
       if (typeof objType !== 'string' && objType.kind === 'map') return objType.valueType;
       return UNKNOWN;
@@ -145,6 +150,14 @@ function getExprType(expr: Expression, analysis: AnalysisResult, fnName: string)
       return UNKNOWN;
     case 'NoneLiteral':
       return { kind: 'option', innerType: UNKNOWN };
+    case 'TupleLiteral': {
+      const elementTypes = expr.elements.map(e => getExprType(e, analysis, fnName));
+      return { kind: 'tuple', elements: elementTypes };
+    }
+    case 'IfExpression': {
+      const thenType = getExprType(expr.thenBranch, analysis, fnName);
+      return isUnknown(thenType) ? getExprType(expr.elseBranch, analysis, fnName) : thenType;
+    }
     default:
       return UNKNOWN;
   }
@@ -162,7 +175,12 @@ function parseInterpolation(str: string): { format: string; vars: string[] } | n
   return { format, vars };
 }
 
-function generateMatchPattern(pattern: MatchPattern, isStringMatch: boolean): string {
+function generateMatchPattern(
+  pattern: MatchPattern,
+  isStringMatch: boolean,
+  analysis: AnalysisResult,
+  matchExprType: YlType,
+): string {
   switch (pattern.kind) {
     case 'WildcardPattern':
       return '_';
@@ -182,8 +200,16 @@ function generateMatchPattern(pattern: MatchPattern, isStringMatch: boolean): st
       }
       return '_';
     }
-    case 'EnumPattern':
-      return `${pattern.enumName}::${pattern.variant}`;
+    case 'EnumPattern': {
+      // For unqualified patterns (enumName = ''), infer enum name from match expression type
+      const enumName = pattern.enumName ||
+        (typeof matchExprType !== 'string' && matchExprType.kind === 'enum' ? matchExprType.name : '');
+      if (pattern.bindings && pattern.bindings.length > 0) {
+        const bindingsStr = pattern.bindings.join(', ');
+        return `${enumName}::${pattern.variant}(${bindingsStr})`;
+      }
+      return `${enumName}::${pattern.variant}`;
+    }
   }
 }
 
@@ -353,6 +379,14 @@ function collectUseStmtsFromExpr(expr: Expression, emitter: RustEmitter): void {
       collectUseStmtsFromExpr(expr.start, emitter);
       collectUseStmtsFromExpr(expr.end, emitter);
       break;
+    case 'TupleLiteral':
+      for (const elem of expr.elements) collectUseStmtsFromExpr(elem, emitter);
+      break;
+    case 'IfExpression':
+      collectUseStmtsFromExpr(expr.condition, emitter);
+      collectUseStmtsFromExpr(expr.thenBranch, emitter);
+      collectUseStmtsFromExpr(expr.elseBranch, emitter);
+      break;
     default:
       break;
   }
@@ -409,7 +443,12 @@ function generateEnumDeclaration(e: EnumDeclaration, emitter: RustEmitter): void
   emitter.emit(`enum ${e.name} {`);
   emitter.indent();
   for (const variant of e.variants) {
-    emitter.emit(`${variant.name},`);
+    if (variant.data && variant.data.length > 0) {
+      const dataTypes = variant.data.map(t => annotationToRustType(t)).join(', ');
+      emitter.emit(`${variant.name}(${dataTypes}),`);
+    } else {
+      emitter.emit(`${variant.name},`);
+    }
   }
   emitter.dedent();
   emitter.emit('}');
@@ -429,6 +468,10 @@ function constRustType(expr: Expression): string {
     if (expr.literalType === 'string') return '&str';
     if (expr.literalType === 'bool') return 'bool';
   }
+  if (expr.kind === 'UnaryExpression' && expr.operator === '-' && expr.operand.kind === 'Literal') {
+    if (expr.operand.literalType === 'int') return 'i32';
+    if (expr.operand.literalType === 'float') return 'f64';
+  }
   return '/* unknown */';
 }
 
@@ -437,6 +480,9 @@ function generateConstValue(expr: Expression): string {
   if (expr.kind === 'Literal') {
     if (expr.literalType === 'string') return `"${expr.value as string}"`;
     return String(expr.value);
+  }
+  if (expr.kind === 'UnaryExpression' && expr.operator === '-' && expr.operand.kind === 'Literal') {
+    return `-${String(expr.operand.value)}`;
   }
   return '/* unsupported const value */';
 }
@@ -582,12 +628,20 @@ function generateStatement(
       break;
     }
     case 'ForStatement': {
-      const iterableCode = generateForIterable(stmt.iterable, analysis, fnName);
-      emitter.emit(`for ${stmt.variable} in ${iterableCode} {`);
-      emitter.indent();
-      // Pass a copy of declaredVars; loop variable is declared implicitly by the for loop
       const loopDeclaredVars = new Set<string>(declaredVars);
-      loopDeclaredVars.add(stmt.variable);
+      if (stmt.destructure) {
+        const iterableCode = generateExpression(stmt.iterable, analysis, fnName);
+        emitter.emit(`for (${stmt.destructure.key}, ${stmt.destructure.value}) in ${iterableCode}.iter() {`);
+        emitter.indent();
+        loopDeclaredVars.add(stmt.destructure.key);
+        loopDeclaredVars.add(stmt.destructure.value);
+      } else {
+        const iterableCode = generateForIterable(stmt.iterable, analysis, fnName);
+        emitter.emit(`for ${stmt.variable} in ${iterableCode} {`);
+        emitter.indent();
+        // Pass a copy of declaredVars; loop variable is declared implicitly by the for loop
+        loopDeclaredVars.add(stmt.variable);
+      }
       generateStatements(fnName, stmt.body, analysis, emitter, loopDeclaredVars, -1);
       emitter.dedent();
       emitter.emit('}');
@@ -617,7 +671,7 @@ function generateStatement(
       emitter.emit(`match ${matchSubject} {`);
       emitter.indent();
       for (const arm of stmt.arms) {
-        const pat = generateMatchPattern(arm.pattern, isStringMatch);
+        const pat = generateMatchPattern(arm.pattern, isStringMatch, analysis, exprType);
         emitter.emit(`${pat} => {`);
         emitter.indent();
         generateStatements(fnName, arm.body, analysis, emitter, declaredVars, -1);
@@ -733,13 +787,22 @@ function generateClosureBodyStatement(
       return `while ${cond} { ${body} }`;
     }
     case 'ForStatement': {
-      const iterableCode = generateForIterable(stmt.iterable, analysis, fnName);
       const loopDeclaredVars = new Set<string>(declaredVars);
-      loopDeclaredVars.add(stmt.variable);
+      let forHeader: string;
+      if (stmt.destructure) {
+        const iterableCode = generateExpression(stmt.iterable, analysis, fnName);
+        loopDeclaredVars.add(stmt.destructure.key);
+        loopDeclaredVars.add(stmt.destructure.value);
+        forHeader = `for (${stmt.destructure.key}, ${stmt.destructure.value}) in ${iterableCode}.iter()`;
+      } else {
+        const iterableCode = generateForIterable(stmt.iterable, analysis, fnName);
+        loopDeclaredVars.add(stmt.variable);
+        forHeader = `for ${stmt.variable} in ${iterableCode}`;
+      }
       const body = stmt.body.map((s) =>
         generateClosureBodyStatement(s, analysis, fnName, loopDeclaredVars, false)
       ).join(' ');
-      return `for ${stmt.variable} in ${iterableCode} { ${body} }`;
+      return `${forHeader} { ${body} }`;
     }
     default:
       return `/* unsupported closure statement: ${stmt.kind} */`;
@@ -807,6 +870,10 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
       return generateBuiltinCall(expr.name, expr.arguments, analysis, fnName, false);
 
     case 'EnumVariantAccess':
+      if (expr.arguments && expr.arguments.length > 0) {
+        const args = expr.arguments.map(a => generateExpression(a, analysis, fnName)).join(', ');
+        return `${expr.enumName}::${expr.variant}(${args})`;
+      }
       return `${expr.enumName}::${expr.variant}`;
 
     case 'ArrayLiteral': {
@@ -837,6 +904,13 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
         }
         const idx = generateExpression(expr.index, analysis, fnName);
         return `${obj}[&${idx}]`;
+      }
+      // Range-based slice: arr[1..3] → arr[1..3].to_vec()
+      if (expr.index.kind === 'RangeExpression') {
+        const start = generateExpression(expr.index.start, analysis, fnName);
+        const end = generateExpression(expr.index.end, analysis, fnName);
+        const op = expr.index.inclusive ? '..=' : '..';
+        return `${obj}[${start}${op}${end}].to_vec()`;
       }
       const idx = generateExpression(expr.index, analysis, fnName);
       return `${obj}[${idx} as usize]`;
@@ -964,6 +1038,11 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
       }
     }
 
+    case 'TupleLiteral': {
+      const elems = expr.elements.map(e => generateExpression(e, analysis, fnName)).join(', ');
+      return `(${elems})`;
+    }
+
     case 'StructLiteral': {
       const fields = expr.fields.map(f => {
         const val = generateExpression(f.value, analysis, fnName);
@@ -1005,6 +1084,13 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
     case 'NoneLiteral':
       return 'None';
 
+    case 'IfExpression': {
+      const cond = generateExpression(expr.condition, analysis, fnName);
+      const thenExpr = generateExpression(expr.thenBranch, analysis, fnName);
+      const elseExpr = generateExpression(expr.elseBranch, analysis, fnName);
+      return `if ${cond} { ${thenExpr} } else { ${elseExpr} }`;
+    }
+
     default:
       return `/* unsupported expression kind: ${(expr as { kind: string }).kind} */`;
   }
@@ -1024,12 +1110,17 @@ function generateBuiltinCall(
   asStatement: boolean,
 ): string {
   if (name === 'print') {
+    const suffix = asStatement ? ';' : '';
+    if (args.length > 1) {
+      const fmtParts = args.map(() => '{}').join(' ');
+      const argExprs = args.map(arg => generateExpression(arg, analysis, fnName)).join(', ');
+      return `println!("${fmtParts}", ${argExprs})${suffix}`;
+    }
     const arg = args[0];
     if (arg && arg.kind === 'Literal' && arg.literalType === 'string') {
       const str = arg.value as string;
       const interp = parseInterpolation(str);
       if (interp) {
-        const suffix = asStatement ? ';' : '';
         return `println!("${interp.format}", ${interp.vars.join(', ')})${suffix}`;
       }
     }
@@ -1037,7 +1128,6 @@ function generateBuiltinCall(
     const argType = arg ? getExprType(arg, analysis, fnName) : UNKNOWN;
     const isEnumType = typeof argType !== 'string' && argType.kind === 'enum';
     const fmt = isEnumType ? '{:?}' : '{}';
-    const suffix = asStatement ? ';' : '';
     return `println!("${fmt}", ${argExpr})${suffix}`;
   }
 
@@ -1163,8 +1253,19 @@ function generateBuiltinCall(
     return `Err(${argExpr})${suffix}`;
   }
 
-  // User-defined function call
-  const argExprs = args.map(a => generateExpression(a, analysis, fnName)).join(', ');
+  // User-defined function call — fill in missing trailing defaults
+  const fnInfo = analysis.functionTypes.get(name);
+  const allArgExprs: string[] = args.map(a => generateExpression(a, analysis, fnName));
+  if (fnInfo?.paramDefaults) {
+    const defaults = fnInfo.paramDefaults;
+    for (let i = args.length; i < defaults.length; i++) {
+      const def = defaults[i];
+      if (def !== undefined) {
+        allArgExprs.push(generateExpression(def, analysis, fnName));
+      }
+    }
+  }
+  const argExprs = allArgExprs.join(', ');
   if (asStatement) return `${name}(${argExprs});`;
   return `${name}(${argExprs})`;
 }

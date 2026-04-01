@@ -19,19 +19,21 @@ export interface CompilationResult {
   warnings: CompilerError[];
   tokens?: Token[];
   ast?: Program;
+  sourceLines?: string[];
 }
 
 export function compile(source: string, filename: string): CompilationResult {
+  const sourceLines = source.split('\n');
   const { tokens, errors: lexErrors } = tokenize(source, filename);
-  if (lexErrors.length > 0) return { success: false, rust: '', errors: lexErrors, warnings: [], tokens };
+  if (lexErrors.length > 0) return { success: false, rust: '', errors: lexErrors, warnings: [], tokens, sourceLines };
 
   const { program, errors: parseErrors } = parse(tokens);
-  if (parseErrors.length > 0) return { success: false, rust: '', errors: parseErrors, warnings: [], tokens, ast: program };
+  if (parseErrors.length > 0) return { success: false, rust: '', errors: parseErrors, warnings: [], tokens, ast: program, sourceLines };
 
   const analysis = analyze(program);
-  if (analysis.errors.length > 0) return { success: false, rust: '', errors: analysis.errors, warnings: analysis.warnings, tokens, ast: program };
+  if (analysis.errors.length > 0) return { success: false, rust: '', errors: analysis.errors, warnings: analysis.warnings, tokens, ast: program, sourceLines };
 
   const rust = generate(program, analysis);
-  return { success: true, rust, errors: [], warnings: analysis.warnings, tokens, ast: program };
+  return { success: true, rust, errors: [], warnings: analysis.warnings, tokens, ast: program, sourceLines };
 }
 

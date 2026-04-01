@@ -28,6 +28,7 @@ const KEYWORDS: Record<string, TokenType> = {
   some: TokenType.Some,
   self: TokenType.Self,
   impl: TokenType.Impl,
+  then: TokenType.Then,
 };
 
 export function tokenize(
@@ -236,6 +237,70 @@ export function tokenize(
     // String literals
     if (ch === '"') {
       const tokenLoc = loc();
+
+      // Triple-quoted string: """..."""
+      if (peek(1) === '"' && peek(2) === '"') {
+        advance(); advance(); advance(); // consume opening """
+        let value = '';
+        let terminated = false;
+        while (pos < source.length) {
+          const c = peek();
+          // Check for closing """
+          if (c === '"' && peek(1) === '"' && peek(2) === '"') {
+            advance(); advance(); advance(); // consume closing """
+            terminated = true;
+            break;
+          }
+          // Normalize literal newlines (increment line counter)
+          if (c === '\n') {
+            advance();
+            value += '\\n';
+            line++;
+            col = 1;
+            continue;
+          }
+          if (c === '\r') {
+            advance();
+            if (peek() === '\n') advance(); // consume \r\n as a single newline
+            value += '\\n';
+            line++;
+            col = 1;
+            continue;
+          }
+          // Escape sequences (same as regular strings)
+          if (c === '\\') {
+            advance(); // consume backslash
+            const escaped = peek();
+            if (escaped === 'n') { advance(); value += '\\n'; }
+            else if (escaped === 't') { advance(); value += '\\t'; }
+            else if (escaped === '\\') { advance(); value += '\\\\'; }
+            else if (escaped === '"') { advance(); value += '\\"'; }
+            else if (escaped === 'r') { advance(); value += '\\r'; }
+            else if (escaped === '{') { advance(); value += '{{'; }
+            else if (escaped === '}') { advance(); value += '}}'; }
+            else {
+              advance();
+              errors.push(createError('lexer', `Invalid escape sequence: \\${escaped}`, tokenLoc));
+            }
+            continue;
+          }
+          // Single " or "" (not closing """) — normalize to escaped form so codegen is safe
+          if (c === '"') {
+            advance();
+            value += '\\"';
+            continue;
+          }
+          value += advance();
+        }
+        if (!terminated) {
+          errors.push(createError('lexer', 'Unterminated triple-quoted string', tokenLoc));
+        } else {
+          addToken(TokenType.String, value, tokenLoc);
+        }
+        continue;
+      }
+
+      // Regular single-quoted string
       advance(); // consume opening quote
       let value = '';
       let terminated = false;
@@ -255,6 +320,8 @@ export function tokenize(
           else if (escaped === '\\') { advance(); value += '\\\\'; }
           else if (escaped === '"') { advance(); value += '\\"'; }
           else if (escaped === 'r') { advance(); value += '\\r'; }
+          else if (escaped === '{') { advance(); value += '{{'; }
+          else if (escaped === '}') { advance(); value += '}}'; }
           else {
             advance();
             errors.push(createError('lexer', `Invalid escape sequence: \\${escaped}`, tokenLoc));

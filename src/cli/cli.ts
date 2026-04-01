@@ -10,12 +10,26 @@ import type { CompilerError } from '../errors/errors.js';
 import { VERSION } from './version.js';
 
 // Exported for testing
-export function formatErrors(errors: CompilerError[]): string {
+export function formatErrors(errors: CompilerError[], sourceLines?: string[]): string {
   return errors
-    .map(
-      (e) =>
-        `error[${e.stage}]: ${e.message}\n  --> ${e.location.filename}:${e.location.line}:${e.location.column}`,
-    )
+    .map((e) => {
+      const header = `error[${e.stage}]: ${e.message}`;
+      const pointer = `  --> ${e.location.filename}:${e.location.line}:${e.location.column}`;
+
+      if (sourceLines && e.location.line >= 1 && e.location.line <= sourceLines.length) {
+        const lineNum = e.location.line;
+        const lineText = sourceLines[lineNum - 1];
+        const lineNumStr = String(lineNum);
+        const gutter = lineNumStr.padStart(lineNumStr.length + 1);
+        const blankGutter = ' '.repeat(lineNumStr.length + 1);
+        const caretOffset = Math.max(0, e.location.column - 1);
+        const sourceLine = `${gutter} | ${lineText}`;
+        const caretLine = `${blankGutter} | ${' '.repeat(caretOffset)}^`;
+        return `${header}\n${pointer}\n${sourceLine}\n${caretLine}`;
+      }
+
+      return `${header}\n${pointer}`;
+    })
     .join('\n');
 }
 
@@ -96,7 +110,7 @@ program
     const result = runCompile(file, opts);
 
     if (!result.success) {
-      console.error(formatErrors(result.errors));
+      console.error(formatErrors(result.errors, result.sourceLines));
       process.exit(1);
     }
 
@@ -129,7 +143,7 @@ program
     const result = runCompile(file, opts);
 
     if (!result.success) {
-      console.error(formatErrors(result.errors));
+      console.error(formatErrors(result.errors, result.sourceLines));
       process.exit(1);
     }
 
@@ -158,7 +172,7 @@ program
     const result = runCompile(file, opts);
 
     if (!result.success) {
-      console.error(formatErrors(result.errors));
+      console.error(formatErrors(result.errors, result.sourceLines));
       process.exit(1);
     }
 

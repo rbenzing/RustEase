@@ -35,6 +35,7 @@ export enum TokenType {
   Some = 'Some',
   Self = 'Self',
   Impl = 'Impl',
+  Then = 'Then',
 
   // Operators
   Plus = 'Plus',

@@ -1,4 +1,5 @@
 import type { CompilerError } from '../errors/errors.js';
+import type { Expression } from '../ast/nodes.js';
 
 // ─── Enum variant ─────────────────────────────────────────────────────────────
 
@@ -188,6 +189,8 @@ export interface FunctionInfo {
   name: string;
   parameterTypes: YlType[];
   returnType: YlType;
+  /** Default value expressions indexed by parameter position; undefined means no default. */
+  paramDefaults?: (Expression | undefined)[];
 }
 
 export interface AnalysisResult {
@@ -200,6 +203,8 @@ export interface AnalysisResult {
   structDeclarations: Map<string, Map<string, YlType>>;  // struct name → (fieldName → YlType)
   implMethods: Map<string, Map<string, FunctionInfo>>;   // struct name → (method name → FunctionInfo)
   mutatingMethods: Set<string>;            // key: "StructName.methodName" — methods that assign to self fields
+  usedVariables: Set<string>;              // key: "functionName:varName" — variables that have been read
+  variableLocations: Map<string, import('../errors/errors.js').SourceLocation>;  // key: "functionName:varName" → declaration location
   errors: CompilerError[];
   warnings: CompilerError[];
 }

@@ -84,9 +84,9 @@ describe('TokenType enum', () => {
     it('has EOF', () => expect(TokenType.EOF).toBe('EOF'));
   });
 
-  it('enum contains all 62 token types', () => {
+  it('enum contains all 63 token types', () => {
     const members = Object.keys(TokenType);
-    expect(members).toHaveLength(62);
+    expect(members).toHaveLength(63);
   });
 
   it('enum values are unique strings', () => {
@@ -495,6 +495,137 @@ describe('tokenize()', () => {
       const t = firstToken('"\\n\\t\\\\\\r"');
       expect(t.type).toBe(TokenType.String);
       expect(t.value).toBe('\\n\\t\\\\\\r');
+    });
+  });
+
+  // S-10: Triple-quoted multi-line strings
+  describe('S-10 triple-quoted strings', () => {
+    it('tokenizes """hello world""" as a single string literal', () => {
+      const t = firstToken('"""hello world"""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('hello world');
+    });
+
+    it('tokenizes triple-quoted string with embedded newline', () => {
+      // JS: 'line 1\nline 2' contains actual newline char; lexer normalizes to \\n
+      const t = firstToken('"""line 1\nline 2"""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('line 1\\nline 2');
+    });
+
+    it('tokenizes triple-quoted string with interpolation {name}', () => {
+      const t = firstToken('"""with {name} interpolation"""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('with {name} interpolation');
+    });
+
+    it('tokenizes multiline triple-quoted string with interpolation', () => {
+      const t = firstToken('"""hello\n{name}\nworld"""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('hello\\n{name}\\nworld');
+    });
+
+    it('tokenizes empty triple-quoted string """"""', () => {
+      const t = firstToken('""""""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('');
+    });
+
+    it('produces error for unterminated triple-quoted string', () => {
+      const { errors } = tokenize('"""unterminated', 'test.re');
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toContain('Unterminated triple-quoted string');
+      expect(errors[0].stage).toBe('lexer');
+    });
+
+    it('triple-quoted string does not emit Newline tokens for embedded newlines', () => {
+      const { tokens } = tokenize('"""line 1\nline 2"""', 'test.re');
+      const newlineTokens = tokens.filter(t => t.type === TokenType.Newline);
+      expect(newlineTokens).toHaveLength(0);
+    });
+
+    it('tracks line number correctly after triple-quoted string with newlines', () => {
+      const { tokens } = tokenize('"""line 1\nline 2"""\nx', 'test.re');
+      const identifier = tokens.find(t => t.type === TokenType.Identifier && t.value === 'x');
+      expect(identifier?.location.line).toBe(3);
+    });
+
+    it('triple-quoted string containing a single quote does not terminate early', () => {
+      const t = firstToken('"""say \\"hi\\""""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('say \\"hi\\"');
+    });
+
+    it('triple-quoted string with escape sequences works like regular strings', () => {
+      const t = firstToken('"""tab\\there"""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('tab\\there');
+    });
+
+    it('regular "hello" strings still work after triple-quote support (regression)', () => {
+      const t = firstToken('"hello"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('hello');
+    });
+
+    it('regular empty string "" still works (regression)', () => {
+      const t = firstToken('""');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('');
+    });
+
+    it('regular string with interpolation still works (regression)', () => {
+      const t = firstToken('"Hello {name}"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('Hello {name}');
+    });
+
+    it('no errors for well-formed triple-quoted string', () => {
+      const { errors } = tokenize('"""hello world"""', 'test.re');
+      expect(errors).toHaveLength(0);
+    });
+  });
+
+  // S-02: String brace escape \{ and \}
+  describe('S-02 brace escape sequences', () => {
+    it('\\{ produces {{ in token value (literal open brace, no interpolation)', () => {
+      const t = firstToken('"\\{"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('{{');
+    });
+
+    it('\\} produces }} in token value (literal close brace)', () => {
+      const t = firstToken('"\\}"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('}}');
+    });
+
+    it('"result: \\{value\\}" produces literal braces with no interpolation markers', () => {
+      const t = firstToken('"result: \\{value\\}"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('result: {{value}}');
+    });
+
+    it('normal "{name}" interpolation still tokenizes correctly (regression)', () => {
+      const t = firstToken('"{name}"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('{name}');
+    });
+
+    it('mix of \\{ escape and normal interpolation "\\{ {name} \\}"', () => {
+      const t = firstToken('"\\{ {name} \\}"');
+      expect(t.type).toBe(TokenType.String);
+      expect(t.value).toBe('{{ {name} }}');
+    });
+
+    it('\\{ does not produce a lexer error', () => {
+      const { errors } = tokenize('"\\{"', 'test.re');
+      expect(errors).toHaveLength(0);
+    });
+
+    it('\\} does not produce a lexer error', () => {
+      const { errors } = tokenize('"\\}"', 'test.re');
+      expect(errors).toHaveLength(0);
     });
   });
 });
