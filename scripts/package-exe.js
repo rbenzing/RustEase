@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { readFileSync, writeFileSync, copyFileSync, unlinkSync, statSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, unlinkSync, statSync, mkdirSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -17,6 +17,13 @@ const seaBlob     = join(root, 'release', 'rustease-sea.blob');
 const seaConfig   = join(root, 'sea-config.json');
 const exeOut      = join(root, 'release', 'rustease.exe');
 const zipOut      = join(root, 'release', `rustease-v${version}-win-x64.zip`);
+
+// Guard: dist/ must be built before packaging
+const distEntry = join(root, 'dist', 'cli', 'cli.js');
+if (!existsSync(distEntry)) {
+  console.error('❌ dist/cli/cli.js not found. Run `npm run build` (tsc) before packaging.');
+  process.exit(1);
+}
 
 console.log(`\n📦 Packaging RustEase v${version} as standalone exe...\n`);
 

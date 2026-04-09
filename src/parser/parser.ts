@@ -545,12 +545,6 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     return { kind: 'VariableAssignment', identifier: identTok.value, typeAnnotation, expression, location };
   }
 
-  function parseExpressionStatement(): ExpressionStatement {
-    const location = currentLocation();
-    const expression = parseExpression();
-    return { kind: 'ExpressionStatement', expression, location };
-  }
-
   // --- Expression parsing with precedence climbing ---
 
   function parseExpression(): Expression {

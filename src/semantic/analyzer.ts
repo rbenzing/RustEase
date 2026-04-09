@@ -5,7 +5,6 @@ import type {
 import { getFunctions } from '../ast/nodes.js';
 import type { SourceLocation } from '../errors/errors.js';
 import { createError } from '../errors/errors.js';
-import type { CompilerError } from '../errors/errors.js';
 import type { YlType, FunctionInfo, AnalysisResult, EnumVariant } from './types.js';
 import { INT, FLOAT, STRING, BOOL, VOID, UNKNOWN, isPrimitive, isNumeric, isUnknown, typesEqual, typeToString } from './types.js';
 import { Scope } from './scope.js';
@@ -501,10 +500,11 @@ function collectTypes(
             const enumTypeVal = resolvedName ? result.enumTypes.get(resolvedName) : undefined;
             if (enumTypeVal && enumTypeVal.kind === 'enum') {
               const variantDef = enumTypeVal.variants.find(v => v.name === enumPat.variant);
-              if (variantDef && variantDef.data) {
-                for (let i = 0; i < Math.min(enumPat.bindings.length, variantDef.data.length); i++) {
+              const bindings = enumPat.bindings; // guarded non-null by outer if
+              if (variantDef && variantDef.data && bindings) {
+                for (let i = 0; i < Math.min(bindings.length, variantDef.data.length); i++) {
                   const bindType = variantDef.data[i] ?? UNKNOWN;
-                  const bindName = enumPat.bindings[i]!;
+                  const bindName = bindings[i]!;
                   if (!scope.isDefined(bindName)) {
                     scope.define(bindName, bindType);
                   }

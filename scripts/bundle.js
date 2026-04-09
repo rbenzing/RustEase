@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { readFileSync, mkdirSync, statSync } from 'node:fs';
+import { readFileSync, mkdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -13,6 +13,13 @@ const version = pkg.version;
 
 // Ensure release directory exists
 mkdirSync(join(root, 'release'), { recursive: true });
+
+// Guard: dist/ must be built before bundling
+const distEntry = join(root, 'dist', 'cli', 'cli.js');
+if (!existsSync(distEntry)) {
+  console.error('❌ dist/cli/cli.js not found. Run `npm run build` (tsc) before bundling.');
+  process.exit(1);
+}
 
 console.log(`Bundling RustEase v${version}...`);
 

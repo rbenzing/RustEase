@@ -28,7 +28,6 @@ function readType(expr: Expression): YlType {
 
 function parseInterpolation(str: string): { format: string; vars: string[] } | null {
   const vars: string[] = [];
-  let match: RegExpExecArray | null;
   INTERP_REGEX.lastIndex = 0;
   const format = str.replace(INTERP_REGEX, (_m, name: string) => {
     vars.push(name);
@@ -40,8 +39,6 @@ function parseInterpolation(str: string): { format: string; vars: string[] } | n
 
 function generateMatchPattern(
   pattern: MatchPattern,
-  isStringMatch: boolean,
-  analysis: AnalysisResult,
   matchExprType: YlType,
 ): string {
   switch (pattern.kind) {
@@ -532,7 +529,7 @@ function generateStatement(
       emitter.emit(`match ${matchSubject} {`);
       emitter.indent();
       for (const arm of stmt.arms) {
-        const pat = generateMatchPattern(arm.pattern, isStringMatch, analysis, exprType);
+        const pat = generateMatchPattern(arm.pattern, exprType);
         emitter.emit(`${pat} => {`);
         emitter.indent();
         generateStatements(fnName, arm.body, analysis, emitter, declaredVars, -1);
