@@ -159,6 +159,70 @@ end
 | String interpolation | `"Hello {name}"` | `format!("Hello {}", name)` |
 | Print | `print(x)` | `println!("{}", x)` |
 | Logical ops | `and`, `or`, `not` | `&&`, `\|\|`, `!` |
+| Error propagation | `try expr` | `expr?` |
+
+### Built-in Functions
+
+#### Math
+
+| Function | Description | Rust Output |
+|----------|-------------|-------------|
+| `sqrt(x)` | Square root (float) | `x.sqrt()` |
+| `pow(x, n)` | Power — `x` must be float, `n` int or float | `x.powi(n)` / `x.powf(n)` |
+| `abs(x)` | Absolute value (int or float) | `x.abs()` |
+| `floor(x)` | Floor (float) | `x.floor()` |
+| `ceil(x)` | Ceiling (float) | `x.ceil()` |
+| `round(x)` | Round (float) | `x.round()` |
+| `min_val(a, b)` | Minimum of two numbers | `a.min(b)` |
+| `max_val(a, b)` | Maximum of two numbers | `a.max(b)` |
+
+#### Collections
+
+| Method | Description | Rust Output |
+|--------|-------------|-------------|
+| `arr.sort()` | Sort in place | `arr.sort();` |
+| `arr.sort_by(\|a,b\| ...)` | Sort with comparator | `arr.sort_by(...);` |
+| `arr.reverse()` | Reverse | `.iter().rev().cloned().collect()` |
+| `arr.unique()` | Deduplicate | sort + dedup |
+| `arr.first()` | First element (Option) | `.first().cloned()` |
+| `arr.last()` | Last element (Option) | `.last().cloned()` |
+| `arr.count()` | Length as int | `.len() as i32` |
+| `arr.sum()` | Sum elements | `.iter().sum::<i32/f64>()` |
+| `arr.min()` | Minimum (Option) | `.iter().min().cloned()` |
+| `arr.max()` | Maximum (Option) | `.iter().max().cloned()` |
+| `arr.take(n)` | First n elements | `.iter().take(n as usize)...` |
+| `arr.skip(n)` | Drop first n elements | `.iter().skip(n as usize)...` |
+| `arr.enumerate()` | Index-value pairs | `.iter().enumerate().collect()` |
+| `arr.zip(other)` | Zip two arrays | `.iter().zip(other.iter()).collect()` |
+| `arr.chain(other)` | Concatenate two arrays | `.iter().chain(other.iter())...` |
+| `arr.flat_map(\|x\| ...)` | Flat map | `.iter().flat_map(...).collect()` |
+| `arr.partition(\|x\| ...)` | Split by predicate | `.iter().partition(...)` |
+
+#### Process Execution
+
+| Function | Returns | Rust Output |
+|----------|---------|-------------|
+| `run_command(cmd)` | void | `Command::new("sh").arg("-c").arg(cmd).status().unwrap()` |
+| `run_command_output(cmd)` | string | `String::from_utf8_lossy(&Command::...output()...stdout).to_string()` |
+| `run_command_success(cmd)` | bool | `Command::new("sh").arg("-c").arg(cmd).status().unwrap().success()` |
+
+### Error Handling
+
+Functions can return `Result<T>` and propagate errors with `try`:
+
+```
+function parse_number(s: string) -> Result<int>
+    return ok(0)
+end
+
+function main() -> Result<int>
+    n = try parse_number("42")
+    print(n)
+    return ok(0)
+end
+```
+
+`try expr` compiles to `expr?` — if the inner `Result` is `Err`, the error is returned immediately. Using `try` in a function that does not return `Result` is a compile-time semantic error.
 
 ## Architecture
 
