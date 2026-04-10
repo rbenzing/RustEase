@@ -1,11 +1,8 @@
-use std::io;
-use std::io::Write;
-
 fn main() {
     let mut todos = vec![];
     let mut count: i32 = 0;
     println!("{}", String::from("=== Todo List ==="));
-    while true {
+    loop {
         let action: String = {
             print!("{}", String::from("Command (add/list/quit): "));
             std::io::Write::flush(&mut std::io::stdout()).unwrap();

@@ -6,14 +6,14 @@ fn main() {
     let mut counts = HashMap::new();
     for word in &words {
         if counts.contains_key(&word) {
-            let mut count = counts[&word];
+            let count = counts[&word];
             counts.insert(word, count + 1);
         } else {
             counts.insert(word, 1);
         }
     }
     for word in &words {
-        let mut count = counts[&word];
+        let count = counts[&word];
         println!("{}: {}", word, count);
     }
 }

@@ -60,7 +60,7 @@ function writeOutputFiles(rust: string, outputDir: string): void {
     '[package]',
     'name = "rustease-output"',
     'version = "0.1.0"',
-    'edition = "2021"',
+    'edition = "2024"',
     '',
   ].join('\n');
 

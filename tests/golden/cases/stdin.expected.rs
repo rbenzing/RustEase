@@ -1,6 +1,3 @@
-use std::io;
-use std::io::Write;
-
 fn main() {
     let name: String = {
         print!("{}", String::from("Enter your name: "));

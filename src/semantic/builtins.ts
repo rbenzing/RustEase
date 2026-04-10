@@ -230,7 +230,6 @@ register({
     return STRING;
   },
   generateRust: ([name]) => `std::env::var(${name ?? '""'}).unwrap_or_default()`,
-  useStatements: ['std::env'],
 });
 
 // env_or
@@ -256,7 +255,6 @@ register({
   },
   generateRust: ([name, def]) =>
     `std::env::var(${name ?? '""'}).unwrap_or(${def ?? '""'}.to_string())`,
-  useStatements: ['std::env'],
 });
 
 // read_line
@@ -271,7 +269,6 @@ register({
   },
   generateRust: (_genArgs, _argTypes) =>
     '{ let mut input = String::new(); std::io::stdin().read_line(&mut input).unwrap(); input.trim().to_string() }',
-  useStatements: ['std::io', 'std::io::Write'],
 });
 
 // prompt
@@ -292,7 +289,6 @@ register({
     const m = msg ?? 'String::from("")';
     return `{ print!("{}", ${m}); std::io::Write::flush(&mut std::io::stdout()).unwrap(); let mut input = String::new(); std::io::stdin().read_line(&mut input).unwrap(); input.trim().to_string() }`;
   },
-  useStatements: ['std::io', 'std::io::Write'],
 });
 
 // args

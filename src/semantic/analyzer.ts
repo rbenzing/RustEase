@@ -133,6 +133,25 @@ export function analyze(program: Program): AnalysisResult {
     collectTypes(fn, fn.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
   }
 
+  // Resolve impl method parameter types from call sites (analogous to function param resolution)
+  for (const [structName, methods] of result.implMethods) {
+    for (const [methodName, methodInfo] of methods) {
+      const callKey = `${structName}.${methodName}`;
+      const calls = callSiteArgs.get(callKey);
+      if (!calls) continue;
+      for (let i = 0; i < methodInfo.parameterTypes.length; i++) {
+        if (isUnknown(methodInfo.parameterTypes[i]!)) {
+          for (const args of calls) {
+            if (i < args.length && !isUnknown(args[i]!)) {
+              methodInfo.parameterTypes[i] = args[i]!;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Resolve parameter types from call sites
   for (const fn of getFunctions(program)) {
     if (!userFunctions.has(fn.name)) continue;
@@ -431,16 +450,51 @@ function collectTypes(
         // Mark the struct variable as mutable when any field is assigned
         result.mutableVariables.add(`${fn.name}:${stmt.object}`);
         break;
-      case 'IfStatement':
-        collectTypes(fn, stmt.thenBranch, scope, result, callSiteArgs, assignmentCount, userFunctions);
+      case 'IfStatement': {
+        // Each branch is an alternative execution path — use separate assignmentCount copies
+        // so variables declared in one branch don't spuriously mark others as mutable.
+        const branchCounts: Map<string, number>[] = [];
+
+        const thenCount = new Map<string, number>(assignmentCount);
+        collectTypes(fn, stmt.thenBranch, scope, result, callSiteArgs, thenCount, userFunctions);
+        branchCounts.push(thenCount);
+
         for (const branch of stmt.elseIfBranches) {
-          collectTypes(fn, branch.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
+          const elseIfCount = new Map<string, number>(assignmentCount);
+          collectTypes(fn, branch.body, scope, result, callSiteArgs, elseIfCount, userFunctions);
+          branchCounts.push(elseIfCount);
         }
-        if (stmt.elseBranch) collectTypes(fn, stmt.elseBranch, scope, result, callSiteArgs, assignmentCount, userFunctions);
+
+        if (stmt.elseBranch) {
+          const elseCount = new Map<string, number>(assignmentCount);
+          collectTypes(fn, stmt.elseBranch, scope, result, callSiteArgs, elseCount, userFunctions);
+          branchCounts.push(elseCount);
+        }
+
+        // Merge: for each variable, use the max count seen in any branch
+        for (const branchCount of branchCounts) {
+          for (const [key, count] of branchCount) {
+            const current = assignmentCount.get(key) ?? 0;
+            if (count > current) {
+              assignmentCount.set(key, count);
+              if (count > 1) result.mutableVariables.add(key);
+            }
+          }
+        }
         break;
-      case 'WhileStatement':
-        collectTypes(fn, stmt.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
+      }
+      case 'WhileStatement': {
+        const whileCount = new Map<string, number>(assignmentCount);
+        collectTypes(fn, stmt.body, scope, result, callSiteArgs, whileCount, userFunctions);
+        // Merge back outer-scope variables
+        for (const [key, count] of whileCount) {
+          if (assignmentCount.has(key) && count > (assignmentCount.get(key) ?? 0)) {
+            assignmentCount.set(key, count);
+            if (count > 1) result.mutableVariables.add(key);
+          }
+        }
         break;
+      }
       case 'ForStatement': {
         if (stmt.destructure) {
           // Map destructuring: for (k, v) in map_expr
@@ -486,11 +540,24 @@ function collectTypes(
             scope.define(stmt.variable, loopVarType);
           }
         }
-        collectTypes(fn, stmt.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
+        // Use a scoped copy of assignmentCount for the loop body:
+        // variables first declared inside the loop are fresh each iteration and
+        // should not be counted as mutable due to multiple loop statements.
+        const loopCount = new Map<string, number>(assignmentCount);
+        collectTypes(fn, stmt.body, scope, result, callSiteArgs, loopCount, userFunctions);
+        // Merge back only variables that existed before the loop (outer-scope variables
+        // assigned inside the loop ARE mutable across iterations).
+        for (const [key, count] of loopCount) {
+          if (assignmentCount.has(key) && count > (assignmentCount.get(key) ?? 0)) {
+            assignmentCount.set(key, count);
+            if (count > 1) result.mutableVariables.add(key);
+          }
+        }
         break;
       }
       case 'MatchStatement': {
         const matchExprTypeCollect = inferExprType(fn, stmt.expression, scope, result, userFunctions, false);
+        const armBranchCounts: Map<string, number>[] = [];
         for (const arm of stmt.arms) {
           // Pre-register pattern bindings so arm body can reference them during type collection
           if (arm.pattern.kind === 'EnumPattern' && arm.pattern.bindings && arm.pattern.bindings.length > 0) {
@@ -513,7 +580,20 @@ function collectTypes(
               }
             }
           }
-          collectTypes(fn, arm.body, scope, result, callSiteArgs, assignmentCount, userFunctions);
+          // Each match arm is an alternative execution path — use per-arm copies
+          const armCount = new Map<string, number>(assignmentCount);
+          collectTypes(fn, arm.body, scope, result, callSiteArgs, armCount, userFunctions);
+          armBranchCounts.push(armCount);
+        }
+        // Merge: for each variable, use the max count seen in any arm
+        for (const armCount of armBranchCounts) {
+          for (const [key, count] of armCount) {
+            const current = assignmentCount.get(key) ?? 0;
+            if (count > current) {
+              assignmentCount.set(key, count);
+              if (count > 1) result.mutableVariables.add(key);
+            }
+          }
         }
         break;
       }
@@ -571,6 +651,17 @@ function collectCallSites(
     collectCallSites(fn, expr.object, scope, result, callSiteArgs, userFunctions);
     for (const arg of expr.arguments) {
       collectCallSites(fn, arg, scope, result, callSiteArgs, userFunctions);
+    }
+    // Record call-site argument types for impl methods so parameter types can be inferred
+    const objType = inferExprType(fn, expr.object, scope, result, userFunctions, false);
+    if (objType.kind === 'struct' && result.implMethods.has(objType.name)) {
+      const methodInfo = result.implMethods.get(objType.name)?.get(expr.method);
+      if (methodInfo) {
+        const callKey = `${objType.name}.${expr.method}`;
+        const argTypes = expr.arguments.map(a => inferExprType(fn, a, scope, result, userFunctions, false));
+        if (!callSiteArgs.has(callKey)) callSiteArgs.set(callKey, []);
+        callSiteArgs.get(callKey)!.push(argTypes);
+      }
     }
   } else if (expr.kind === 'ArrayLiteral') {
     for (const elem of expr.elements) {

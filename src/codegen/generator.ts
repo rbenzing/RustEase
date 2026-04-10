@@ -450,19 +450,19 @@ function generateStatement(
       const cond = generateExpression(stmt.condition, analysis, fnName);
       emitter.emit(`if ${cond} {`);
       emitter.indent();
-      generateStatements(fnName, stmt.thenBranch, analysis, emitter, declaredVars, -1);
+      generateStatements(fnName, stmt.thenBranch, analysis, emitter, new Set<string>(declaredVars), -1);
       emitter.dedent();
       for (const branch of stmt.elseIfBranches) {
         const branchCond = generateExpression(branch.condition, analysis, fnName);
         emitter.emit(`} else if ${branchCond} {`);
         emitter.indent();
-        generateStatements(fnName, branch.body, analysis, emitter, declaredVars, -1);
+        generateStatements(fnName, branch.body, analysis, emitter, new Set<string>(declaredVars), -1);
         emitter.dedent();
       }
       if (stmt.elseBranch) {
         emitter.emit('} else {');
         emitter.indent();
-        generateStatements(fnName, stmt.elseBranch, analysis, emitter, declaredVars, -1);
+        generateStatements(fnName, stmt.elseBranch, analysis, emitter, new Set<string>(declaredVars), -1);
         emitter.dedent();
       }
       emitter.emit('}');
@@ -470,7 +470,8 @@ function generateStatement(
     }
     case 'WhileStatement': {
       const cond = generateExpression(stmt.condition, analysis, fnName);
-      emitter.emit(`while ${cond} {`);
+      const header = cond === 'true' ? 'loop' : `while ${cond}`;
+      emitter.emit(`${header} {`);
       emitter.indent();
       generateStatements(fnName, stmt.body, analysis, emitter, declaredVars, -1);
       emitter.dedent();
@@ -532,7 +533,7 @@ function generateStatement(
         const pat = generateMatchPattern(arm.pattern, exprType);
         emitter.emit(`${pat} => {`);
         emitter.indent();
-        generateStatements(fnName, arm.body, analysis, emitter, declaredVars, -1);
+        generateStatements(fnName, arm.body, analysis, emitter, new Set<string>(declaredVars), -1);
         emitter.dedent();
         emitter.emit('}');
       }
@@ -642,7 +643,8 @@ function generateClosureBodyStatement(
       const body = stmt.body.map((s) =>
         generateClosureBodyStatement(s, analysis, fnName, declaredVars, false)
       ).join(' ');
-      return `while ${cond} { ${body} }`;
+      const header = cond === 'true' ? 'loop' : `while ${cond}`;
+      return `${header} { ${body} }`;
     }
     case 'ForStatement': {
       const loopDeclaredVars = new Set<string>(declaredVars);
@@ -771,7 +773,17 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
         return `${obj}[${start}${op}${end}].to_vec()`;
       }
       const idx = generateExpression(expr.index, analysis, fnName);
-      return `${obj}[${idx} as usize]`;
+      const baseIndex = `${obj}[${idx} as usize]`;
+      // Non-Copy types (String, structs, enums, arrays, options, results) need .clone()
+      // to avoid "cannot move out of index" compile errors
+      if (objType.kind === 'array') {
+        const elemType = objType.elementType;
+        const isCopy = elemType.kind === 'primitive' && (elemType.name === 'int' || elemType.name === 'float' || elemType.name === 'bool');
+        if (!isCopy) {
+          return `${baseIndex}.clone()`;
+        }
+      }
+      return baseIndex;
     }
 
     case 'MethodCall': {
@@ -987,7 +999,8 @@ function generateBuiltinCall(
     const argExpr = arg ? generateExpression(arg, analysis, fnName) : '""';
     const argType = arg ? readType(arg) : UNKNOWN;
     const isEnumType = argType.kind === 'enum';
-    const fmt = isEnumType ? '{:?}' : '{}';
+    const isArrayType = argType.kind === 'array';
+    const fmt = (isEnumType || isArrayType) ? '{:?}' : '{}';
     return `println!("${fmt}", ${argExpr})${suffix}`;
   }
 

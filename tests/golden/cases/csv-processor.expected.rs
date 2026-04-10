@@ -10,9 +10,9 @@ fn main() {
     for row in &rows {
         if row_num > 0 {
             let fields: Vec<String> = row.split(String::from(",").as_str()).map(|s| s.to_string()).collect::<Vec<String>>();
-            let name: String = fields[0 as usize];
-            let qty: i32 = fields[1 as usize].parse::<i32>().unwrap();
-            let price: f64 = fields[2 as usize].parse::<f64>().unwrap();
+            let name: String = fields[0 as usize].clone();
+            let qty: i32 = fields[1 as usize].clone().parse::<i32>().unwrap();
+            let price: f64 = fields[2 as usize].clone().parse::<f64>().unwrap();
             let revenue: f64 = qty as f64 * price;
             grand_total = grand_total + revenue;
             println!("{}: {} units at {} = {}", name, qty, price, revenue);

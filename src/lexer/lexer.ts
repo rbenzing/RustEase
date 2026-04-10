@@ -29,6 +29,7 @@ const KEYWORDS: Record<string, TokenType> = {
   self: TokenType.Self,
   impl: TokenType.Impl,
   then: TokenType.Then,
+  gen: TokenType.Gen,
 };
 
 export function tokenize(

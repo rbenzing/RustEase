@@ -1,11 +1,8 @@
-use std::io;
-use std::io::Write;
-
 fn main() {
     let secret: i32 = 42;
     let mut attempts: i32 = 0;
     println!("{}", String::from("Guess the number (1-100)!"));
-    while true {
+    loop {
         let input: String = {
             print!("{}", String::from("Your guess: "));
             std::io::Write::flush(&mut std::io::stdout()).unwrap();

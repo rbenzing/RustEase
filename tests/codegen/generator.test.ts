@@ -779,9 +779,9 @@ describe('generate()', () => {
       expect(rust).toContain('std::env::var(String::from("HOME")).unwrap_or_default()');
     });
 
-    it('emits use std::env for env()', () => {
+    it('does not emit use std::env for env() — fully-qualified path is used', () => {
       const rust = compileToRust('function main()\nhome = env("HOME")\nend');
-      expect(rust).toContain('use std::env;');
+      expect(rust).not.toContain('use std::env;');
     });
 
     it('generates multi-line block for read_line() assignment', () => {
@@ -791,9 +791,9 @@ describe('generate()', () => {
       expect(rust).toContain('input.trim().to_string()');
     });
 
-    it('emits use std::io for read_line()', () => {
+    it('does not emit use std::io for read_line() — fully-qualified path is used', () => {
       const rust = compileToRust('function main()\nline = read_line()\nend');
-      expect(rust).toContain('use std::io;');
+      expect(rust).not.toContain('use std::io;');
     });
 
     it('generates multi-line block for prompt() assignment', () => {
@@ -803,9 +803,9 @@ describe('generate()', () => {
       expect(rust).toContain('input.trim().to_string()');
     });
 
-    it('emits use std::io for prompt()', () => {
+    it('does not emit use std::io for prompt() — fully-qualified path is used', () => {
       const rust = compileToRust('function main()\nname = prompt("Enter: ")\nend');
-      expect(rust).toContain('use std::io;');
+      expect(rust).not.toContain('use std::io;');
     });
 
     it('generates env_or() with fallback value', () => {
@@ -825,19 +825,19 @@ describe('generate()', () => {
   });
 
   describe('use statement collection through nested control flow', () => {
-    it('emits use std::io when read_line() is inside an if statement', () => {
+    it('does not emit use std::io when read_line() is inside an if statement — fully-qualified path used', () => {
       const rust = compileToRust('function main()\nif true\nline = read_line()\nend\nend');
-      expect(rust).toContain('use std::io;');
+      expect(rust).not.toContain('use std::io;');
     });
 
-    it('emits use std::env when env() is inside a while loop body', () => {
+    it('does not emit use std::env when env() is inside a while loop body — fully-qualified path used', () => {
       const rust = compileToRust('function main()\nx = 1\nwhile x > 0\nh = env("HOME")\nx = x - 1\nend\nend');
-      expect(rust).toContain('use std::env;');
+      expect(rust).not.toContain('use std::env;');
     });
 
-    it('emits use std::io when read_line() is inside a for loop body', () => {
+    it('does not emit use std::io when read_line() is inside a for loop body — fully-qualified path used', () => {
       const rust = compileToRust('function main()\nfor i in 0..3\nline = read_line()\nend\nend');
-      expect(rust).toContain('use std::io;');
+      expect(rust).not.toContain('use std::io;');
     });
 
     it('emits use std::collections::HashMap when map literal is inside a match arm', () => {
@@ -845,14 +845,14 @@ describe('generate()', () => {
       expect(rust).toContain('use std::collections::HashMap;');
     });
 
-    it('emits use std::env when env() is in a return statement', () => {
+    it('does not emit use std::env when env() is in a return statement — fully-qualified path used', () => {
       const rust = compileToRust('function foo()\nreturn env("HOME")\nend\nfunction main()\nend');
-      expect(rust).toContain('use std::env;');
+      expect(rust).not.toContain('use std::env;');
     });
 
-    it('emits use std::env when env() is inside a single-expression closure body', () => {
+    it('does not emit use std::env when env() is inside a single-expression closure body — fully-qualified path used', () => {
       const rust = compileToRust('function main()\nnames = ["HOME"]\nresults = names.map(|k| env(k))\nend');
-      expect(rust).toContain('use std::env;');
+      expect(rust).not.toContain('use std::env;');
     });
 
     it('emits use std::collections::HashMap when map is inside a multi-statement closure body', () => {

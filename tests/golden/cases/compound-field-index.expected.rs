@@ -4,7 +4,7 @@ struct Counter {
 }
 
 impl Counter {
-    fn increment(&mut self, amount: /* unknown */) {
+    fn increment(&mut self, amount: i32) {
         self.value = self.value + amount;
     }
 }

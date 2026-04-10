@@ -84,9 +84,9 @@ describe('TokenType enum', () => {
     it('has EOF', () => expect(TokenType.EOF).toBe('EOF'));
   });
 
-  it('enum contains all 63 token types', () => {
+  it('enum contains all 64 token types', () => {
     const members = Object.keys(TokenType);
-    expect(members).toHaveLength(63);
+    expect(members).toHaveLength(64);
   });
 
   it('enum values are unique strings', () => {
