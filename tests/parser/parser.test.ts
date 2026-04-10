@@ -1408,3 +1408,53 @@ describe('parse() — import declarations', () => {
   });
 });
 
+// ─── Try expression (v1.1) ───────────────────────────────────────────────────
+
+describe('parse() — try expression (v1.1)', () => {
+  it('"result = try some_fn()" contains a TryExpression (not parsed as Identifier)', () => {
+    // In RED state, 'try' is an Identifier so tryExpr.kind will be 'Identifier', not 'TryExpression'
+    const src = 'function f()\nresult = try some_fn()\nend';
+    const stmt = firstStmt(src) as VariableAssignment;
+    const expr = stmt.expression as { kind: string };
+    expect(expr.kind).not.toBe('Identifier'); // fails in RED: 'try' is lexed as Identifier
+    expect(expr.kind).toBe('TryExpression');   // fails in RED: node does not exist
+  });
+
+  it('"result = try some_fn()" produces VariableAssignment with TryExpression', () => {
+    const src = 'function f()\nresult = try some_fn()\nend';
+    const stmt = firstStmt(src) as VariableAssignment;
+    expect(stmt.kind).toBe('VariableAssignment');
+    const tryExpr = stmt.expression as { kind: string };
+    expect(tryExpr.kind).toBe('TryExpression');
+  });
+
+  it('TryExpression wraps the FunctionCall as its inner expression', () => {
+    const src = 'function f()\nresult = try some_fn()\nend';
+    const stmt = firstStmt(src) as VariableAssignment;
+    const tryExpr = stmt.expression as { kind: string; expression: { kind: string; name: string } };
+    expect(tryExpr.kind).toBe('TryExpression');
+    expect(tryExpr.expression.kind).toBe('FunctionCall');
+    expect(tryExpr.expression.name).toBe('some_fn');
+  });
+
+  it('"try expr" as standalone statement parses as ExpressionStatement containing TryExpression', () => {
+    const src = 'function f()\ntry some_fn()\nend';
+    const { errors } = parseSource(src);
+    expect(errors).toHaveLength(0);
+    const stmt = firstStmt(src) as ExpressionStatement;
+    expect(stmt.kind).toBe('ExpressionStatement');
+    const tryExpr = stmt.expression as { kind: string };
+    expect(tryExpr.kind).toBe('TryExpression');
+  });
+
+  it('"let x: int = try parse_fn()" parses with type annotation and TryExpression', () => {
+    const src = 'function f()\nx: int = try parse_fn()\nend';
+    const { errors } = parseSource(src);
+    expect(errors).toHaveLength(0);
+    const stmt = firstStmt(src) as VariableAssignment;
+    expect(stmt.typeAnnotation).toBe('int');
+    const tryExpr = stmt.expression as { kind: string };
+    expect(tryExpr.kind).toBe('TryExpression');
+  });
+});
+

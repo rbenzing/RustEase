@@ -192,7 +192,8 @@ export type Expression =
   | ClosureExpression
   | SelfExpression
   | NoneLiteral
-  | IfExpression;
+  | IfExpression
+  | TryExpression;
 
 export type BinaryOperator =
   | '+' | '-' | '*' | '/' | '%'
@@ -307,4 +308,9 @@ export interface IfExpression extends BaseNode {
   condition: Expression;
   thenBranch: Expression;
   elseBranch: Expression;
+}
+
+export interface TryExpression extends BaseNode {
+  kind: 'TryExpression';
+  expression: Expression;
 }

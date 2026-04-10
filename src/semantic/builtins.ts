@@ -432,6 +432,220 @@ register({
   generateRust: ([arg]) => `Ok(${arg ?? '()'})`,
 });
 
+// ─── Math built-in functions ──────────────────────────────────────────────────
+
+// sqrt
+register({
+  name: 'sqrt',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('sqrt', 1, args.length, location, errors);
+    if (reportErrors && args.length >= 1) {
+      const argType = args[0]!;
+      if (!isPrimitive(argType, 'float') && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'sqrt' requires float argument, got '${typeToString(argType)}'`, location));
+      }
+    }
+    return FLOAT;
+  },
+  generateRust: ([arg0]) => `${arg0 ?? '0.0'}.sqrt()`,
+});
+
+// pow
+register({
+  name: 'pow',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('pow', 2, args.length, location, errors);
+    if (reportErrors && args.length >= 1) {
+      const argType = args[0]!;
+      if (!isPrimitive(argType, 'float') && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'pow' base argument must be float, got ${typeToString(argType)}`, location));
+      }
+    }
+    if (reportErrors && args.length >= 2) {
+      const argType = args[1]!;
+      if (!isNumeric(argType) && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'pow' second argument must be numeric, got '${typeToString(argType)}'`, location));
+      }
+    }
+    return FLOAT;
+  },
+  generateRust: ([arg0, arg1], [_argType0, argType1]) => {
+    const base = arg0 ?? '0.0';
+    const exp = arg1 ?? '0';
+    const expType = argType1 ?? UNKNOWN;
+    if (isPrimitive(expType, 'int')) return `${base}.powi(${exp})`;
+    return `${base}.powf(${exp})`;
+  },
+});
+
+// abs
+register({
+  name: 'abs',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('abs', 1, args.length, location, errors);
+    if (args.length >= 1) {
+      const argType = args[0]!;
+      if (reportErrors && !isNumeric(argType) && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'abs' requires numeric argument, got '${typeToString(argType)}'`, location));
+      }
+      if (isPrimitive(argType, 'int')) return INT;
+    }
+    return FLOAT;
+  },
+  generateRust: ([arg0]) => `${arg0 ?? '0'}.abs()`,
+});
+
+// floor
+register({
+  name: 'floor',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('floor', 1, args.length, location, errors);
+    if (reportErrors && args.length >= 1) {
+      const argType = args[0]!;
+      if (!isPrimitive(argType, 'float') && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'floor' requires float argument, got '${typeToString(argType)}'`, location));
+      }
+    }
+    return FLOAT;
+  },
+  generateRust: ([arg0]) => `${arg0 ?? '0.0'}.floor()`,
+});
+
+// ceil
+register({
+  name: 'ceil',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('ceil', 1, args.length, location, errors);
+    if (reportErrors && args.length >= 1) {
+      const argType = args[0]!;
+      if (!isPrimitive(argType, 'float') && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'ceil' requires float argument, got '${typeToString(argType)}'`, location));
+      }
+    }
+    return FLOAT;
+  },
+  generateRust: ([arg0]) => `${arg0 ?? '0.0'}.ceil()`,
+});
+
+// round
+register({
+  name: 'round',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('round', 1, args.length, location, errors);
+    if (reportErrors && args.length >= 1) {
+      const argType = args[0]!;
+      if (!isPrimitive(argType, 'float') && !isUnknown(argType)) {
+        errors.push(createError('semantic',
+          `'round' requires float argument, got '${typeToString(argType)}'`, location));
+      }
+    }
+    return FLOAT;
+  },
+  generateRust: ([arg0]) => `${arg0 ?? '0.0'}.round()`,
+});
+
+// min_val
+register({
+  name: 'min_val',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('min_val', 2, args.length, location, errors);
+    const arg0Type = args.length >= 1 ? args[0]! : UNKNOWN;
+    const arg1Type = args.length >= 2 ? args[1]! : UNKNOWN;
+    if (reportErrors && args.length >= 1 && !isNumeric(arg0Type) && !isUnknown(arg0Type)) {
+      errors.push(createError('semantic',
+        `'min_val' first argument must be numeric, got '${typeToString(arg0Type)}'`, location));
+    }
+    if (reportErrors && args.length >= 2 && !isNumeric(arg1Type) && !isUnknown(arg1Type)) {
+      errors.push(createError('semantic',
+        `'min_val' second argument must be numeric, got '${typeToString(arg1Type)}'`, location));
+    }
+    if (isPrimitive(arg0Type, 'int') && isPrimitive(arg1Type, 'int')) return INT;
+    return FLOAT;
+  },
+  generateRust: ([arg0, arg1]) => `${arg0 ?? '0'}.min(${arg1 ?? '0'})`,
+});
+
+// max_val
+register({
+  name: 'max_val',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) requireExactArgs('max_val', 2, args.length, location, errors);
+    const arg0Type = args.length >= 1 ? args[0]! : UNKNOWN;
+    const arg1Type = args.length >= 2 ? args[1]! : UNKNOWN;
+    if (reportErrors && args.length >= 1 && !isNumeric(arg0Type) && !isUnknown(arg0Type)) {
+      errors.push(createError('semantic',
+        `'max_val' first argument must be numeric, got '${typeToString(arg0Type)}'`, location));
+    }
+    if (reportErrors && args.length >= 2 && !isNumeric(arg1Type) && !isUnknown(arg1Type)) {
+      errors.push(createError('semantic',
+        `'max_val' second argument must be numeric, got '${typeToString(arg1Type)}'`, location));
+    }
+    if (isPrimitive(arg0Type, 'int') && isPrimitive(arg1Type, 'int')) return INT;
+    return FLOAT;
+  },
+  generateRust: ([arg0, arg1]) => `${arg0 ?? '0'}.max(${arg1 ?? '0'})`,
+});
+
+// run_command
+register({
+  name: 'run_command',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) {
+      if (args.length !== 1) {
+        errors.push(createError('semantic',
+          `'run_command' requires exactly 1 argument, got ${args.length}`, location));
+      } else {
+        requireStringArg('run_command', args[0]!, '', location, errors);
+      }
+    }
+    return VOID;
+  },
+  generateRust: ([cmd]) =>
+    `std::process::Command::new("sh").arg("-c").arg(${cmd ?? 'String::from("")'}).status().unwrap()`,
+});
+
+// run_command_output
+register({
+  name: 'run_command_output',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) {
+      if (args.length !== 1) {
+        errors.push(createError('semantic',
+          `'run_command_output' requires exactly 1 argument, got ${args.length}`, location));
+      } else {
+        requireStringArg('run_command_output', args[0]!, '', location, errors);
+      }
+    }
+    return STRING;
+  },
+  generateRust: ([cmd]) =>
+    `String::from_utf8_lossy(&std::process::Command::new("sh").arg("-c").arg(${cmd ?? 'String::from("")'}).output().unwrap().stdout).to_string()`,
+});
+
+// run_command_success
+register({
+  name: 'run_command_success',
+  validate: (args, location, errors, reportErrors) => {
+    if (reportErrors) {
+      if (args.length !== 1) {
+        errors.push(createError('semantic',
+          `'run_command_success' requires exactly 1 argument, got ${args.length}`, location));
+      } else {
+        requireStringArg('run_command_success', args[0]!, '', location, errors);
+      }
+    }
+    return BOOL;
+  },
+  generateRust: ([cmd]) =>
+    `std::process::Command::new("sh").arg("-c").arg(${cmd ?? 'String::from("")'}).status().unwrap().success()`,
+});
+
 // err
 register({
   name: 'err',

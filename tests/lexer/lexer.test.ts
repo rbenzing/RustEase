@@ -84,9 +84,9 @@ describe('TokenType enum', () => {
     it('has EOF', () => expect(TokenType.EOF).toBe('EOF'));
   });
 
-  it('enum contains all 64 token types', () => {
+  it('enum contains all 65 token types', () => {
     const members = Object.keys(TokenType);
-    expect(members).toHaveLength(64);
+    expect(members).toHaveLength(65);
   });
 
   it('enum values are unique strings', () => {
@@ -583,6 +583,30 @@ describe('tokenize()', () => {
     it('no errors for well-formed triple-quoted string', () => {
       const { errors } = tokenize('"""hello world"""', 'test.re');
       expect(errors).toHaveLength(0);
+    });
+  });
+
+  // v1.1: 'try' keyword tokenization
+  describe('try keyword (v1.1)', () => {
+    it('TokenType has a Try entry equal to "Try"', () => {
+      expect((TokenType as Record<string, string>)['Try']).toBe('Try');
+    });
+
+    it('tokenizes "try" as a keyword token, not as an Identifier', () => {
+      const t = firstToken('try');
+      expect(t.type).not.toBe(TokenType.Identifier);
+    });
+
+    it('tokenizes "try" with type Try and value "try"', () => {
+      const t = firstToken('try');
+      expect(t.type).toBe('Try' as TokenType);
+      expect(t.value).toBe('try');
+    });
+
+    it('"try some_fn()" — first token is the Try keyword token', () => {
+      const { tokens } = tokenize('try some_fn()', 'test.re');
+      expect(tokens[0]!.type).toBe('Try' as TokenType);
+      expect(tokens[0]!.type).not.toBe(TokenType.Identifier);
     });
   });
 

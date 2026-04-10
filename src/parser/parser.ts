@@ -46,6 +46,7 @@ import type {
   MapLiteral,
   IfExpression,
   TupleLiteral,
+  TryExpression,
 } from '../ast/nodes.js';
 
 export function parse(tokens: Token[]): { program: Program; errors: CompilerError[] } {
@@ -258,12 +259,23 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
     const parameters = parseParameters();
     expect(TokenType.RightParen, "Expected ')' after parameters");
 
-    // Optional return type annotation: -> Type
+    // Optional return type annotation: -> Type or -> Type<...>
     let returnTypeAnnotation: string | undefined;
     if (check(TokenType.ThinArrow)) {
       advance(); // consume '->'
       const typeTok = expect(TokenType.Identifier, "Expected return type after '->'");
-      returnTypeAnnotation = typeTok.value;
+      let typeStr = typeTok.value;
+      // Handle generic type syntax: Result<int>, Option<string>, etc.
+      if (check(TokenType.LessThan)) {
+        let depth = 0;
+        while (!isAtEnd()) {
+          const t = peek();
+          if (t.type === TokenType.LessThan) { depth++; typeStr += advance().value; }
+          else if (t.type === TokenType.GreaterThan) { depth--; typeStr += advance().value; if (depth === 0) break; }
+          else { typeStr += advance().value; }
+        }
+      }
+      returnTypeAnnotation = typeStr;
     }
     skipNewlines();
 
@@ -646,6 +658,12 @@ export function parse(tokens: Token[]): { program: Program; errors: CompilerErro
       advance();
       const operand = parseUnary();
       return { kind: 'UnaryExpression', operator: '-', operand, location: loc } satisfies UnaryExpression;
+    }
+    if (check(TokenType.Try)) {
+      const loc = currentLocation();
+      advance();
+      const expression = parseUnary();
+      return { kind: 'TryExpression', expression, location: loc } satisfies TryExpression;
     }
     return parsePostfix();
   }

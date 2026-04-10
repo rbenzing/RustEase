@@ -219,7 +219,9 @@ export function analyze(program: Program): AnalysisResult {
     }
     validateBody(fn, fn.body, scope, result, assignmentCount, userFunctions);
     // Infer return type
-    fnInfo.returnType = inferReturnType(fn, fn.body, scope, result, userFunctions);
+    const inferred = inferReturnType(fn, fn.body, scope, result, userFunctions);
+    // If no explicit annotation and inferred type is unknown, treat as void
+    fnInfo.returnType = (!fn.returnTypeAnnotation && isUnknown(inferred)) ? VOID : inferred;
   }
 
   // Analyze impl method bodies
@@ -602,7 +604,7 @@ function collectTypes(
         // Mark mutability for push/pop and map-mutating method calls
         if (stmt.expression.kind === 'MethodCall') {
           const mc = stmt.expression;
-          if (mc.method === 'push' || mc.method === 'pop' || mc.method === 'remove') {
+          if (mc.method === 'push' || mc.method === 'pop' || mc.method === 'remove' || mc.method === 'sort' || mc.method === 'sort_by') {
             markRootAsMutable(fn, mc.object, result);
           }
           // Mark struct receiver as mutable when calling a method that modifies self
@@ -687,6 +689,8 @@ function collectCallSites(
     for (const arg of expr.arguments) {
       collectCallSites(fn, arg, scope, result, callSiteArgs, userFunctions);
     }
+  } else if (expr.kind === 'TryExpression') {
+    collectCallSites(fn, expr.expression, scope, result, callSiteArgs, userFunctions);
   }
 }
 
@@ -1313,6 +1317,30 @@ function inferExprTypeCore(
           expr.location));
       }
       return isUnknown(thenType) ? elseType : thenType;
+    }
+    case 'TryExpression': {
+      const innerType = inferExprType(fn, expr.expression, scope, result, userFunctions, reportErrors);
+      if (reportErrors) {
+        // Check that the inner expression is a Result type
+        if (innerType.kind !== 'result' && !isUnknown(innerType)) {
+          result.errors.push(createError('semantic',
+            `'try' expression requires a Result type, got '${typeToString(innerType)}'`,
+            expr.location));
+        }
+        // Check that the enclosing function returns a Result type
+        const fnRetAnnotation = fn.returnTypeAnnotation;
+        const fnRetType = fnRetAnnotation ? annotationToYlType(fnRetAnnotation) : VOID;
+        if (fnRetType.kind !== 'result' && !isUnknown(fnRetType)) {
+          result.errors.push(createError('semantic',
+            `'try' can only be used in a function that returns a Result type`,
+            expr.location));
+        }
+      }
+      // The TryExpression resolves to the okType of the Result
+      if (innerType.kind === 'result') {
+        return innerType.okType;
+      }
+      return UNKNOWN;
     }
     default:
       return UNKNOWN;

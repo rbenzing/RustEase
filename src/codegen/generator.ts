@@ -245,6 +245,9 @@ function collectUseStmtsFromExpr(expr: Expression, emitter: RustEmitter): void {
       collectUseStmtsFromExpr(expr.thenBranch, emitter);
       collectUseStmtsFromExpr(expr.elseBranch, emitter);
       break;
+    case 'TryExpression':
+      collectUseStmtsFromExpr(expr.expression, emitter);
+      break;
     default:
       break;
   }
@@ -901,6 +904,77 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
             : '|x| true';
           return `${obj}.iter().find(${closure}).cloned()`;
         }
+        case 'sort':
+          return `${obj}.sort()`;
+        case 'sort_by': {
+          const closure = expr.arguments[0]
+            ? generateExpression(expr.arguments[0], analysis, fnName)
+            : '|a, b| a.cmp(b)';
+          return `${obj}.sort_by(${closure})`;
+        }
+        case 'enumerate':
+          return `${obj}.iter().enumerate().collect::<Vec<_>>()`;
+        case 'zip': {
+          const arg = expr.arguments[0]
+            ? generateExpression(expr.arguments[0], analysis, fnName)
+            : 'other';
+          return `${obj}.iter().zip(${arg}.iter()).collect::<Vec<_>>()`;
+        }
+        case 'sum': {
+          const arrObjType = readType(expr.object);
+          const isFloat = arrObjType.kind === 'array' && isPrimitive(arrObjType.elementType, 'float');
+          return `${obj}.iter().sum::<${isFloat ? 'f64' : 'i32'}>()`;
+        }
+        case 'min':
+          return `${obj}.iter().min().cloned()`;
+        case 'max':
+          return `${obj}.iter().max().cloned()`;
+        case 'flat_map': {
+          const closure = expr.arguments[0]
+            ? generateExpression(expr.arguments[0], analysis, fnName)
+            : '|x| x';
+          return `${obj}.iter().flat_map(${closure}).collect::<Vec<_>>()`;
+        }
+        case 'take': {
+          const n = expr.arguments[0]
+            ? generateExpression(expr.arguments[0], analysis, fnName)
+            : '0';
+          return `${obj}.iter().take(${n} as usize).cloned().collect::<Vec<_>>()`;
+        }
+        case 'skip': {
+          const n = expr.arguments[0]
+            ? generateExpression(expr.arguments[0], analysis, fnName)
+            : '0';
+          return `${obj}.iter().skip(${n} as usize).cloned().collect::<Vec<_>>()`;
+        }
+        case 'chain': {
+          const arg = expr.arguments[0]
+            ? generateExpression(expr.arguments[0], analysis, fnName)
+            : 'other';
+          return `${obj}.iter().chain(${arg}.iter()).cloned().collect::<Vec<_>>()`;
+        }
+        case 'partition': {
+          const closureArg = expr.arguments[0];
+          if (closureArg && closureArg.kind === 'ClosureExpression' && !Array.isArray(closureArg.body)) {
+            const param0 = closureArg.parameters[0]?.name ?? 'x';
+            const bodyExpr = generateExpression(closureArg.body as Expression, analysis, fnName);
+            return `${obj}.iter().partition(|&&${param0}| ${bodyExpr})`;
+          }
+          const closure = closureArg
+            ? generateExpression(closureArg, analysis, fnName)
+            : '|&&x| true';
+          return `${obj}.iter().partition(${closure})`;
+        }
+        case 'reverse':
+          return `${obj}.iter().rev().cloned().collect::<Vec<_>>()`;
+        case 'unique':
+          return `{ let mut v = ${obj}.clone(); v.sort(); v.dedup(); v }`;
+        case 'first':
+          return `${obj}.first().cloned()`;
+        case 'last':
+          return `${obj}.last().cloned()`;
+        case 'count':
+          return `${obj}.len() as i32`;
         default: {
           const args = expr.arguments.map(a => generateExpression(a, analysis, fnName)).join(', ');
           return `${obj}.${expr.method}(${args})`;
@@ -959,6 +1033,11 @@ function generateExpression(expr: Expression, analysis: AnalysisResult, fnName: 
       const thenExpr = generateExpression(expr.thenBranch, analysis, fnName);
       const elseExpr = generateExpression(expr.elseBranch, analysis, fnName);
       return `if ${cond} { ${thenExpr} } else { ${elseExpr} }`;
+    }
+
+    case 'TryExpression': {
+      const inner = generateExpression(expr.expression, analysis, fnName);
+      return `${inner}?`;
     }
 
     default:

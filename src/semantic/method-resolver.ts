@@ -1,7 +1,7 @@
 import type { SourceLocation, CompilerError } from '../errors/errors.js';
 import { createError } from '../errors/errors.js';
 import type { YlType, FunctionInfo } from './types.js';
-import { INT, STRING, BOOL, VOID, UNKNOWN, isPrimitive, isUnknown, typesEqual, typeToString } from './types.js';
+import { INT, FLOAT, STRING, BOOL, VOID, UNKNOWN, isPrimitive, isUnknown, typesEqual, typeToString } from './types.js';
 
 export interface MethodCallResult {
   returnType: YlType;
@@ -188,6 +188,52 @@ function resolveArrayMethod(
       const findElemType = arrType ? arrType.elementType : UNKNOWN;
       return { returnType: { kind: 'option', innerType: findElemType }, markMutable: false };
     }
+    case 'sort':
+      return { returnType: VOID, markMutable: true };
+    case 'sort_by':
+      return { returnType: VOID, markMutable: true };
+    case 'enumerate':
+      return { returnType: { kind: 'array', elementType: UNKNOWN }, markMutable: false };
+    case 'zip':
+      return { returnType: { kind: 'array', elementType: UNKNOWN }, markMutable: false };
+    case 'sum': {
+      const elemType = arrType ? arrType.elementType : UNKNOWN;
+      const sumType = isPrimitive(elemType, 'float') ? FLOAT : INT;
+      return { returnType: sumType, markMutable: false };
+    }
+    case 'min':
+    case 'max': {
+      const elemType2 = arrType ? arrType.elementType : UNKNOWN;
+      return { returnType: { kind: 'option', innerType: elemType2 }, markMutable: false };
+    }
+    case 'flat_map':
+      return { returnType: { kind: 'array', elementType: UNKNOWN }, markMutable: false };
+    case 'take':
+    case 'skip': {
+      const sliceType: YlType = arrType ?? { kind: 'array', elementType: UNKNOWN };
+      return { returnType: sliceType, markMutable: false };
+    }
+    case 'chain': {
+      const chainType: YlType = arrType ?? { kind: 'array', elementType: UNKNOWN };
+      return { returnType: chainType, markMutable: false };
+    }
+    case 'partition': {
+      const partElem = arrType ? arrType.elementType : UNKNOWN;
+      const partArr: YlType = { kind: 'array', elementType: partElem };
+      return { returnType: { kind: 'tuple', elements: [partArr, partArr] }, markMutable: false };
+    }
+    case 'reverse':
+    case 'unique': {
+      const revType: YlType = arrType ?? { kind: 'array', elementType: UNKNOWN };
+      return { returnType: revType, markMutable: false };
+    }
+    case 'first':
+    case 'last': {
+      const flElem = arrType ? arrType.elementType : UNKNOWN;
+      return { returnType: { kind: 'option', innerType: flElem }, markMutable: false };
+    }
+    case 'count':
+      return { returnType: INT, markMutable: false };
     default:
       if (reportErrors) {
         errors.push(createError('semantic', `Unknown array method '${methodName}'`, location));

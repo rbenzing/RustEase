@@ -1309,6 +1309,389 @@ describe('generate()', () => {
       expect(rust).toContain('if flag { String::from("yes") } else { String::from("no") }');
     });
   });
+
+  describe('Math built-in functions', () => {
+    it('sqrt(x) generates x.sqrt()', () => {
+      const rust = compileToRust('function main()\nx = 9.0\nr = sqrt(x)\nend');
+      expect(rust).toContain('x.sqrt()');
+    });
+
+    it('sqrt with float literal generates literal.sqrt()', () => {
+      const rust = compileToRust('function main()\nr = sqrt(4.0)\nend');
+      expect(rust).toContain('.sqrt()');
+    });
+
+    it('pow(x, n) with integer exponent generates x.powi(n)', () => {
+      const rust = compileToRust('function main()\nx = 2.0\nr = pow(x, 3)\nend');
+      expect(rust).toContain('x.powi(3)');
+    });
+
+    it('pow(x, n) with float exponent generates x.powf(n)', () => {
+      const rust = compileToRust('function main()\nx = 2.0\nr = pow(x, 0.5)\nend');
+      expect(rust).toContain('x.powf(0.5)');
+    });
+
+    it('abs(x) generates x.abs()', () => {
+      const rust = compileToRust('function main()\nx = -5\nr = abs(x)\nend');
+      expect(rust).toContain('x.abs()');
+    });
+
+    it('abs with float generates float.abs()', () => {
+      const rust = compileToRust('function main()\nx = -3.14\nr = abs(x)\nend');
+      expect(rust).toContain('x.abs()');
+    });
+
+    it('floor(x) generates x.floor()', () => {
+      const rust = compileToRust('function main()\nx = 3.7\nr = floor(x)\nend');
+      expect(rust).toContain('x.floor()');
+    });
+
+    it('ceil(x) generates x.ceil()', () => {
+      const rust = compileToRust('function main()\nx = 3.2\nr = ceil(x)\nend');
+      expect(rust).toContain('x.ceil()');
+    });
+
+    it('round(x) generates x.round()', () => {
+      const rust = compileToRust('function main()\nx = 3.5\nr = round(x)\nend');
+      expect(rust).toContain('x.round()');
+    });
+
+    it('min_val(a, b) generates a.min(b)', () => {
+      const rust = compileToRust('function main()\na = 3\nb = 5\nr = min_val(a, b)\nend');
+      expect(rust).toContain('a.min(b)');
+    });
+
+    it('min_val with float args generates a.min(b)', () => {
+      const rust = compileToRust('function main()\na = 1.5\nb = 2.5\nr = min_val(a, b)\nend');
+      expect(rust).toContain('a.min(b)');
+    });
+
+    it('max_val(a, b) generates a.max(b)', () => {
+      const rust = compileToRust('function main()\na = 3\nb = 5\nr = max_val(a, b)\nend');
+      expect(rust).toContain('a.max(b)');
+    });
+
+    it('max_val with float args generates a.max(b)', () => {
+      const rust = compileToRust('function main()\na = 1.5\nb = 2.5\nr = max_val(a, b)\nend');
+      expect(rust).toContain('a.max(b)');
+    });
+
+    it('sqrt result can be used in expression', () => {
+      const rust = compileToRust('function main()\nx = 16.0\nr = sqrt(x) + 1.0\nend');
+      expect(rust).toContain('x.sqrt()');
+    });
+
+    it('abs result can be assigned with correct float type', () => {
+      const rust = compileToRust('function main()\nx = -2.5\nr = abs(x)\nend');
+      expect(rust).toContain('x.abs()');
+      expect(rust).toContain('f64');
+    });
+  });
+
+  describe('Extended collection methods', () => {
+    // ── sort ──────────────────────────────────────────────────────────────────
+    it('arr.sort() generates arr.sort(); as in-place statement', () => {
+      const rust = compileToRust('function main()\narr = [3, 1, 2]\narr.sort()\nend');
+      expect(rust).toContain('arr.sort();');
+    });
+
+    it('arr.sort() marks receiver array as mutable', () => {
+      const rust = compileToRust('function main()\narr = [3, 1, 2]\narr.sort()\nend');
+      expect(rust).toContain('let mut arr');
+    });
+
+    // ── sort_by ───────────────────────────────────────────────────────────────
+    it('arr.sort_by(closure) generates arr.sort_by(|a, b| a.cmp(b)); statement', () => {
+      const rust = compileToRust('function main()\narr = [3, 1, 2]\narr.sort_by(|a, b| a.cmp(b))\nend');
+      expect(rust).toContain('arr.sort_by(|a, b| a.cmp(b));');
+    });
+
+    it('arr.sort_by(closure) marks receiver array as mutable', () => {
+      const rust = compileToRust('function main()\narr = [3, 1, 2]\narr.sort_by(|a, b| a.cmp(b))\nend');
+      expect(rust).toContain('let mut arr');
+    });
+
+    // ── enumerate ─────────────────────────────────────────────────────────────
+    it('arr.enumerate() generates arr.iter().enumerate().collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nresult = arr.enumerate()\nend');
+      expect(rust).toContain('.iter().enumerate().collect::<Vec<_>>()');
+    });
+
+    // ── zip ───────────────────────────────────────────────────────────────────
+    it('arr.zip(other) generates arr.iter().zip(other.iter()).collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nother = [4, 5, 6]\nresult = arr.zip(other)\nend');
+      expect(rust).toContain('.iter().zip(other.iter()).collect::<Vec<_>>()');
+    });
+
+    // ── sum ───────────────────────────────────────────────────────────────────
+    it('arr.sum() on int array generates arr.iter().sum::<i32>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\ntotal = arr.sum()\nend');
+      expect(rust).toContain('.iter().sum::<i32>()');
+    });
+
+    it('arr.sum() on float array generates arr.iter().sum::<f64>()', () => {
+      const rust = compileToRust('function main()\narr = [1.0, 2.0, 3.0]\ntotal = arr.sum()\nend');
+      expect(rust).toContain('.iter().sum::<f64>()');
+    });
+
+    // ── min ───────────────────────────────────────────────────────────────────
+    it('arr.min() generates arr.iter().min().cloned()', () => {
+      const rust = compileToRust('function main()\narr = [3, 1, 2]\nm = arr.min()\nend');
+      expect(rust).toContain('.iter().min().cloned()');
+    });
+
+    // ── max ───────────────────────────────────────────────────────────────────
+    it('arr.max() generates arr.iter().max().cloned()', () => {
+      const rust = compileToRust('function main()\narr = [3, 1, 2]\nm = arr.max()\nend');
+      expect(rust).toContain('.iter().max().cloned()');
+    });
+
+    // ── flat_map ──────────────────────────────────────────────────────────────
+    it('arr.flat_map(closure) generates arr.iter().flat_map(|x| ...).collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nresult = arr.flat_map(|x| [x, x])\nend');
+      expect(rust).toContain('.iter().flat_map(');
+      expect(rust).toContain('.collect::<Vec<_>>()');
+    });
+
+    // ── take ──────────────────────────────────────────────────────────────────
+    it('arr.take(n) generates arr.iter().take(n as usize).cloned().collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3, 4, 5]\nresult = arr.take(3)\nend');
+      expect(rust).toContain('.iter().take(3 as usize).cloned().collect::<Vec<_>>()');
+    });
+
+    it('arr.take(0) generates take(0 as usize) edge case', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nresult = arr.take(0)\nend');
+      expect(rust).toContain('.iter().take(0 as usize)');
+    });
+
+    // ── skip ──────────────────────────────────────────────────────────────────
+    it('arr.skip(n) generates arr.iter().skip(n as usize).cloned().collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3, 4, 5]\nresult = arr.skip(2)\nend');
+      expect(rust).toContain('.iter().skip(2 as usize).cloned().collect::<Vec<_>>()');
+    });
+
+    it('arr.skip(0) generates skip(0 as usize) edge case', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nresult = arr.skip(0)\nend');
+      expect(rust).toContain('.iter().skip(0 as usize)');
+    });
+
+    // ── chain ─────────────────────────────────────────────────────────────────
+    it('arr.chain(other) generates arr.iter().chain(other.iter()).cloned().collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2]\nother = [3, 4]\nresult = arr.chain(other)\nend');
+      expect(rust).toContain('.iter().chain(other.iter()).cloned().collect::<Vec<_>>()');
+    });
+
+    // ── partition ─────────────────────────────────────────────────────────────
+    it('arr.partition(closure) generates arr.iter().partition(|&&x| ...)', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3, 4]\nresult = arr.partition(|x| x % 2 == 0)\nend');
+      expect(rust).toContain('.iter().partition(|&&x|');
+    });
+
+    // ── reverse ───────────────────────────────────────────────────────────────
+    it('arr.reverse() generates arr.iter().rev().cloned().collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nresult = arr.reverse()\nend');
+      expect(rust).toContain('.iter().rev().cloned().collect::<Vec<_>>()');
+    });
+
+    it('arr.reverse() on single-element array generates .iter().rev().cloned().collect::<Vec<_>>()', () => {
+      const rust = compileToRust('function main()\narr = [1]\nresult = arr.reverse()\nend');
+      expect(rust).toContain('.iter().rev().cloned().collect::<Vec<_>>()');
+    });
+
+    // ── unique ────────────────────────────────────────────────────────────────
+    it('arr.unique() generates dedup-based unique collection', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 2, 3, 3]\nresult = arr.unique()\nend');
+      expect(rust).toContain('.dedup(');
+    });
+
+    // ── first ─────────────────────────────────────────────────────────────────
+    it('arr.first() generates arr.first().cloned()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nf = arr.first()\nend');
+      expect(rust).toContain('.first().cloned()');
+    });
+
+    it('arr.first() on empty array still generates .first().cloned()', () => {
+      const rust = compileToRust('function main()\narr = []\nf = arr.first()\nend');
+      expect(rust).toContain('.first().cloned()');
+    });
+
+    // ── last ──────────────────────────────────────────────────────────────────
+    it('arr.last() generates arr.last().cloned()', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nl = arr.last()\nend');
+      expect(rust).toContain('.last().cloned()');
+    });
+
+    it('arr.last() on empty array still generates .last().cloned()', () => {
+      const rust = compileToRust('function main()\narr = []\nl = arr.last()\nend');
+      expect(rust).toContain('.last().cloned()');
+    });
+
+    // ── count ─────────────────────────────────────────────────────────────────
+    it('arr.count() generates arr.len() as i32', () => {
+      const rust = compileToRust('function main()\narr = [1, 2, 3]\nn = arr.count()\nend');
+      expect(rust).toContain('.len() as i32');
+    });
+
+    it('arr.count() on single-element array generates .len() as i32', () => {
+      const rust = compileToRust('function main()\narr = [42]\nn = arr.count()\nend');
+      expect(rust).toContain('.len() as i32');
+    });
+  });
+
+  describe('Process execution built-ins', () => {
+    // Helper: run semantic analysis only (no codegen) so we can inspect errors
+    function analyzeForErrors(source: string) {
+      const { tokens } = tokenize(source, 'test.re');
+      const { program } = parse(tokens);
+      return analyze(program);
+    }
+
+    // ── run_command ─────────────────────────────────────────────────────────────
+
+    it('run_command("ls") as statement generates Command::new("sh").arg("-c") chain', () => {
+      const rust = compileToRust('function main()\nrun_command("ls")\nend');
+      expect(rust).toContain('std::process::Command::new("sh")');
+      expect(rust).toContain('.arg("-c")');
+      expect(rust).toContain('.status().unwrap()');
+    });
+
+    it('run_command with variable generates Command chain referencing the variable', () => {
+      const rust = compileToRust('function main()\ncmd = "ls"\nrun_command(cmd)\nend');
+      expect(rust).toContain('std::process::Command::new("sh")');
+      expect(rust).toContain('.arg("-c")');
+      expect(rust).toContain('cmd');
+    });
+
+    it('run_command is used as statement — void return produces no let binding', () => {
+      const rust = compileToRust('function main()\nrun_command("ls")\nend');
+      expect(rust).toContain('.status().unwrap();');
+      // void return: no variable should be bound on that line
+      const lines = rust.split('\n');
+      const cmdLine = lines.find(l => l.includes('status().unwrap()'));
+      expect(cmdLine).toBeDefined();
+      expect(cmdLine).not.toMatch(/let\s+\w+/);
+    });
+
+    // ── run_command_output ───────────────────────────────────────────────────────
+
+    it('run_command_output("ls") generates Command output capture chain', () => {
+      const rust = compileToRust('function main()\nout = run_command_output("ls")\nend');
+      expect(rust).toContain('std::process::Command::new("sh")');
+      expect(rust).toContain('.arg("-c")');
+      expect(rust).toContain('.output().unwrap().stdout');
+      expect(rust).toContain('String::from_utf8_lossy(');
+      expect(rust).toContain('.to_string()');
+    });
+
+    it('run_command_output with variable generates output capture chain using the variable', () => {
+      const rust = compileToRust('function main()\ncmd = "ls"\nout = run_command_output(cmd)\nend');
+      expect(rust).toContain('std::process::Command::new("sh")');
+      expect(rust).toContain('.output().unwrap().stdout');
+    });
+
+    it('run_command_output returns string — assigned variable is typed as String', () => {
+      const rust = compileToRust('function main()\nout = run_command_output("ls")\nend');
+      expect(rust).toContain('let out: String =');
+    });
+
+    // ── run_command_success ──────────────────────────────────────────────────────
+
+    it('run_command_success("ls") generates Command status().unwrap().success() chain', () => {
+      const rust = compileToRust('function main()\nok = run_command_success("ls")\nend');
+      expect(rust).toContain('std::process::Command::new("sh")');
+      expect(rust).toContain('.arg("-c")');
+      expect(rust).toContain('.status().unwrap().success()');
+    });
+
+    it('run_command_success with variable generates success check referencing the variable', () => {
+      const rust = compileToRust('function main()\ncmd = "ls"\nok = run_command_success(cmd)\nend');
+      expect(rust).toContain('std::process::Command::new("sh")');
+      expect(rust).toContain('.status().unwrap().success()');
+    });
+
+    it('run_command_success returns bool — assigned variable is typed as bool', () => {
+      const rust = compileToRust('function main()\nok = run_command_success("ls")\nend');
+      expect(rust).toContain('let ok: bool =');
+    });
+
+    // ── Error cases: wrong argument type ────────────────────────────────────────
+
+    it('run_command(42) with non-string arg produces a semantic error mentioning string', () => {
+      const result = analyzeForErrors('function main()\nrun_command(42)\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('string') && e.message.includes('run_command')
+      )).toBe(true);
+    });
+
+    it('run_command_output(42) with non-string arg produces a semantic error mentioning string', () => {
+      const result = analyzeForErrors('function main()\nout = run_command_output(42)\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('string') && e.message.includes('run_command_output')
+      )).toBe(true);
+    });
+
+    it('run_command_success(42) with non-string arg produces a semantic error mentioning string', () => {
+      const result = analyzeForErrors('function main()\nok = run_command_success(42)\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('string') && e.message.includes('run_command_success')
+      )).toBe(true);
+    });
+
+    // ── Error cases: too many arguments ─────────────────────────────────────────
+
+    it('run_command("a", "b") with too many args produces a semantic error about argument count', () => {
+      const result = analyzeForErrors('function main()\nrun_command("a", "b")\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('requires exactly 1 argument') && e.message.includes('run_command')
+      )).toBe(true);
+    });
+
+    it('run_command_output("a", "b") with too many args produces a semantic error about argument count', () => {
+      const result = analyzeForErrors('function main()\nout = run_command_output("a", "b")\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('requires exactly 1 argument') && e.message.includes('run_command_output')
+      )).toBe(true);
+    });
+
+    it('run_command_success("a", "b") with too many args produces a semantic error about argument count', () => {
+      const result = analyzeForErrors('function main()\nok = run_command_success("a", "b")\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('requires exactly 1 argument') && e.message.includes('run_command_success')
+      )).toBe(true);
+    });
+
+    // ── Error cases: too few arguments ──────────────────────────────────────────
+
+    it('run_command() with no args produces a semantic error about argument count', () => {
+      const result = analyzeForErrors('function main()\nrun_command()\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('requires exactly 1 argument') && e.message.includes('run_command')
+      )).toBe(true);
+    });
+
+    it('run_command_output() with no args produces a semantic error about argument count', () => {
+      const result = analyzeForErrors('function main()\nout = run_command_output()\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('requires exactly 1 argument') && e.message.includes('run_command_output')
+      )).toBe(true);
+    });
+
+    it('run_command_success() with no args produces a semantic error about argument count', () => {
+      const result = analyzeForErrors('function main()\nok = run_command_success()\nend');
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some(e =>
+        e.message.includes('requires exactly 1 argument') && e.message.includes('run_command_success')
+      )).toBe(true);
+    });
+  });
 });
 
 
@@ -1341,5 +1724,31 @@ describe('generate() — tuple literals (S-17)', () => {
     // Rust infers tuple type, so no explicit type annotation needed
     expect(rust).toContain('let t');
     expect(rust).toContain('(1, String::from("hello"))');
+  });
+});
+
+// ─── Try expression code generation (v1.1) ──────────────────────────────────
+
+describe('generate() — try expression (v1.1)', () => {
+  it('"result = try some_fn()" generates "some_fn()?" in the Rust output', () => {
+    const rust = compileToRust('function f()\nresult = try some_fn()\nend');
+    expect(rust).toContain('some_fn()?');
+  });
+
+  it('"try some_fn()" as a standalone statement generates "some_fn()?;" in the Rust output', () => {
+    const rust = compileToRust('function f()\ntry some_fn()\nend');
+    expect(rust).toContain('some_fn()?;');
+  });
+
+  it('"x: int = try parse_fn()" generates "parse_fn()?" appended with ? in the Rust output', () => {
+    const rust = compileToRust('function f()\nx: int = try parse_fn()\nend');
+    expect(rust).toContain('parse_fn()?');
+  });
+
+  it('nested try: inner call gets ? suffix', () => {
+    const rust = compileToRust('function f()\nresult = try outer_fn(try inner_fn())\nend');
+    expect(rust).toContain('inner_fn()?');
+    expect(rust).toContain('outer_fn(');
+    expect(rust).toContain(')?');
   });
 });

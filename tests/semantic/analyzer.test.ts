@@ -1068,7 +1068,7 @@ end`);
     it('unknown array method produces error', () => {
       const result = analyzeSource(`function foo()
 arr = [1, 2, 3]
-x = arr.sort()
+x = arr.frobnicate()
 end`);
       expect(result.errors.length).toBeGreaterThan(0);
       expect(result.errors[0].message).toContain("Unknown array method");
@@ -2621,5 +2621,50 @@ x = t.5
 end`);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]!.message).toContain('out of range');
+  });
+});
+
+// ─── Try expression semantic analysis (v1.1) ────────────────────────────────
+
+describe('analyze() — try expression (v1.1)', () => {
+  it('valid try in a Result-returning function produces no try-related errors', () => {
+    const src = `function parse_int(s: string) -> Result<int>
+return ok(0)
+end
+function foo() -> Result<int>
+x = try parse_int("42")
+return x
+end`;
+    const result = analyzeSource(src);
+    const tryErrors = result.errors.filter(e =>
+      e.message.includes("'try'") || e.message.includes('try expression')
+    );
+    expect(tryErrors).toHaveLength(0);
+  });
+
+  it('using try in a non-Result-returning function raises a semantic error about try context', () => {
+    const src = `function parse_int(s: string) -> Result<int>
+return ok(0)
+end
+function foo() -> int
+x = try parse_int("42")
+return x
+end`;
+    const result = analyzeSource(src);
+    expect(result.errors.some(e =>
+      e.message.includes("'try'") && e.message.toLowerCase().includes('result')
+    )).toBe(true);
+  });
+
+  it('using try on a non-Result expression raises a semantic error about the inner type', () => {
+    const src = `function foo() -> Result<int>
+x = try 42
+return x
+end`;
+    const result = analyzeSource(src);
+    expect(result.errors.some(e =>
+      e.message.toLowerCase().includes('result') &&
+      (e.message.includes("'try'") || e.message.includes('try expression'))
+    )).toBe(true);
   });
 });
